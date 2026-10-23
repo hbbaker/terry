@@ -1,6 +1,8 @@
 //! Runs git and gh for the gate, with plain output and a time limit.
 
 use std::collections::BTreeSet;
+use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -21,9 +23,22 @@ const FALLBACK_DEFAULT_BRANCHES: [&str; 2] = ["main", "master"];
 /// Runs `args` in `cwd` and returns its stdout. An error names the command and gives its
 /// stderr.
 pub fn run(args: &[&str], cwd: &Path, stdin: Option<&str>) -> Result<String, String> {
+    run_with_env(args, cwd, stdin, &[])
+}
+
+fn run_with_env(
+    args: &[&str],
+    cwd: &Path,
+    stdin: Option<&str>,
+    extra_env: &[(&str, &str)],
+) -> Result<String, String> {
     let (program, rest) = args.split_first().expect("a command names a program");
     let mut command = Command::new(program);
-    command.args(rest).current_dir(cwd).envs(PLAIN_OUTPUT_ENV);
+    command
+        .args(rest)
+        .current_dir(cwd)
+        .envs(PLAIN_OUTPUT_ENV)
+        .envs(extra_env.iter().copied());
     let shown = args.join(" ");
     match process::run_captured(&mut command, stdin, TIMEOUT) {
         Ok(done) if done.status == Some(0) => Ok(done.stdout),
@@ -36,6 +51,101 @@ pub fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
     let mut full = vec!["git", "--no-pager", "-c", "color.ui=false"];
     full.extend_from_slice(args);
     run(&full, repo, None)
+}
+
+/// Where a replayed index starts: a copy of the real index, or the last commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexBase {
+    Current,
+    Head,
+}
+
+/// One change to replay on the index copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IndexOp {
+    /// A git command that changes only the index, as the words after `git`.
+    Git(Vec<String>),
+    /// `git mv`: the index entry moves; the file on disk stays where it is.
+    Move { from: String, to: String },
+}
+
+/// What `git diff --cached` would show after `ops` run on a copy of the index. The real index
+/// and the working tree stay as they are.
+pub fn staged_diff_after(repo: &Path, base: IndexBase, ops: &[IndexOp]) -> Result<String, String> {
+    let copy = env::temp_dir().join(format!("terry-index-{}", std::process::id()));
+    let _ = fs::remove_file(&copy);
+    let result = diff_with_index(repo, base, ops, &copy);
+    let _ = fs::remove_file(&copy);
+    result
+}
+
+fn diff_with_index(
+    repo: &Path,
+    base: IndexBase,
+    ops: &[IndexOp],
+    index: &Path,
+) -> Result<String, String> {
+    match base {
+        IndexBase::Current => {
+            let real = git(
+                repo,
+                &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+            )?;
+            // A repo with no commits and nothing staged has no index file; git starts one.
+            if Path::new(real.trim()).exists() {
+                fs::copy(real.trim(), index)
+                    .map_err(|error| format!("cannot copy the git index: {error}"))?;
+            }
+        }
+        IndexBase::Head => {
+            let tree = if ref_exists(repo, "HEAD") {
+                "HEAD"
+            } else {
+                "--empty"
+            };
+            run_on_index(repo, index, &["read-tree", tree])?;
+        }
+    }
+    for op in ops {
+        apply_op(repo, index, op)?;
+    }
+    run_on_index(
+        repo,
+        index,
+        &["diff", "--cached", "--no-ext-diff", "--no-color"],
+    )
+}
+
+fn apply_op(repo: &Path, index: &Path, op: &IndexOp) -> Result<(), String> {
+    match op {
+        IndexOp::Git(args) => {
+            let words: Vec<&str> = args.iter().map(String::as_str).collect();
+            run_on_index(repo, index, &words).map(drop)
+        }
+        IndexOp::Move { from, to } => {
+            let entry = run_on_index(repo, index, &["ls-files", "-s", "--", from])?;
+            let mut fields = entry.split_whitespace();
+            let (Some(mode), Some(sha)) = (fields.next(), fields.next()) else {
+                return Err(format!("git mv: {from} is not tracked"));
+            };
+            let prefix = git(repo, &["rev-parse", "--show-prefix"])?;
+            let target = format!("{mode},{sha},{}{to}", prefix.trim());
+            run_on_index(repo, index, &["rm", "--cached", "-q", "--", from])?;
+            run_on_index(
+                repo,
+                index,
+                &["update-index", "--add", "--cacheinfo", &target],
+            )
+            .map(drop)
+        }
+    }
+}
+
+fn run_on_index(repo: &Path, index: &Path, args: &[&str]) -> Result<String, String> {
+    let index = index.to_string_lossy();
+    let mut full = vec!["git", "--no-pager", "-c", "color.ui=false"];
+    full.extend_from_slice(args);
+    run_with_env(&full, repo, None, &[("GIT_INDEX_FILE", index.as_ref())])
 }
 
 pub fn diff(repo: &Path, args: &[&str]) -> Result<String, String> {

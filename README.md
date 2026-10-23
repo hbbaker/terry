@@ -131,6 +131,11 @@ A change in `/config` reloads the plugin at once. After you edit `settings.json`
   have opened it with `/terry`); in a narrower one, run `/terry`.
 - The pane draws up to about 90,000 characters of diff; past that, it lists how many files
   it left out and where the full patch is.
+- Claude Code runs the gate before the whole command line. When one line runs `git add`, `rm`,
+  `mv`, `reset` or `restore --staged` and then `git commit`, terry replays those on a copy of
+  the index, so the diff shows what the commit will hold. `git commit <paths>` shows only
+  those paths. For other changes before the commit (`stash`, `checkout` and the like), the
+  prompt warns that the diff may not match.
 - Lint reads the working copy. When that differs from what is being committed, the
   prompt says so.
 
