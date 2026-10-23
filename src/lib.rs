@@ -22,5 +22,6 @@ pub mod prompt;
 pub mod review;
 pub mod sha256;
 pub mod shell;
+pub mod staging;
 pub mod stamp;
 pub mod text;

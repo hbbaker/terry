@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::git;
+use crate::git::{self, IndexBase, IndexOp};
 use crate::patch::added_lines_by_file;
 use crate::shell::{ActionKind, GatedAction};
+use crate::staging;
 
 const DEFAULT_REMOTE: &str = "origin";
 const PR_VIEW_FIELDS: &str = "number,title,url,baseRefName,headRefName";
@@ -63,11 +64,48 @@ fn unsynced_notes(repo: &Path, patch: &str, diff_args: &[&str]) -> Result<Vec<St
 fn build_commit(action: &GatedAction) -> Result<DiffResult, String> {
     let repo = &action.repo_dir;
     let stage_all = action.args.iter().any(|arg| is_stage_all_flag(arg));
-    let mut notes = Vec::new();
-    let (patch, title) = if stage_all && git::ref_exists(repo, "HEAD") {
+    let paths = staging::commit_paths(&action.args);
+    let include_index = action
+        .args
+        .iter()
+        .any(|arg| arg == "-i" || arg == "--include");
+    let preceding = staging::sort_preceding(&action.preceding_git, repo);
+    let mut notes = preceding.warnings.clone();
+    let (patch, title) = if !paths.is_empty() && !stage_all {
+        let (base, mut ops) = if include_index {
+            (IndexBase::Current, preceding.ops.clone())
+        } else {
+            (IndexBase::Head, Vec::new())
+        };
+        let mut add = vec!["add".to_owned(), "--".to_owned()];
+        add.extend(paths.iter().cloned());
+        ops.push(IndexOp::Git(add));
+        notes.push(format!(
+            "commit with paths: only {} are committed, from the working tree.",
+            paths.join(", ")
+        ));
+        (
+            git::staged_diff_after(repo, base, &ops)?,
+            "Changes to the named paths",
+        )
+    } else if stage_all && preceding.ops.is_empty() && git::ref_exists(repo, "HEAD") {
         (
             git::diff(repo, &["HEAD"])?,
             "Staged and unstaged changes (commit -a)",
+        )
+    } else if stage_all {
+        let mut ops = preceding.ops.clone();
+        ops.push(IndexOp::Git(vec!["add".to_owned(), "-u".to_owned()]));
+        notes.push(replay_note(&preceding.replayed));
+        (
+            git::staged_diff_after(repo, IndexBase::Current, &ops)?,
+            "Staged and unstaged changes (commit -a)",
+        )
+    } else if !preceding.ops.is_empty() {
+        notes.push(replay_note(&preceding.replayed));
+        (
+            git::staged_diff_after(repo, IndexBase::Current, &preceding.ops)?,
+            "Staged changes",
         )
     } else {
         let patch = git::diff(repo, &["--cached"])?;
@@ -88,6 +126,13 @@ fn build_commit(action: &GatedAction) -> Result<DiffResult, String> {
         notes,
         lintable: true,
     })
+}
+
+fn replay_note(replayed: &[String]) -> String {
+    format!(
+        "Includes {} in this command; nothing is staged yet.",
+        replayed.join(", ")
+    )
 }
 
 /// The value of the first of `names` in `args`: `--base main`, `-B main` or `--base=main`.

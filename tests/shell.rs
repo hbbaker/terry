@@ -61,6 +61,27 @@ fn should_follow_cd_when_git_runs_after_it() {
 }
 
 #[test]
+fn should_attach_the_earlier_git_add_to_the_commit_when_they_share_a_command() {
+    let actions = find_gated_actions("git add -A && git commit -m x", Path::new("/r"));
+
+    assert_eq!(actions.len(), 1);
+    assert_eq!(
+        actions[0].preceding_git,
+        vec![GitStep {
+            subcommand: "add".to_owned(),
+            args: vec!["-A".to_owned()]
+        }]
+    );
+}
+
+#[test]
+fn should_not_attach_a_git_add_from_another_folder_to_the_commit() {
+    let actions = find_gated_actions("git -C /a add -A && git -C /b commit -m x", Path::new("/r"));
+
+    assert!(actions[0].preceding_git.is_empty());
+}
+
+#[test]
 fn should_use_the_git_c_folder_when_command_names_one() {
     assert_eq!(
         kinds("git -C ../other commit -m x", "/no-such-terry/repo"),
