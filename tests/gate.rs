@@ -304,6 +304,101 @@ fn should_return_ask_with_staged_diff_when_command_is_git_commit() {
 }
 
 #[test]
+fn should_show_the_added_files_when_git_add_runs_in_the_same_command_as_the_commit() {
+    let sandbox = Sandbox::new();
+    sandbox.write_file("fresh.py", "FRESH = 1\n");
+
+    let reason = sandbox.reason_of(sandbox.run_hook("git add -A && git commit -m \"add fresh\""));
+
+    assert!(reason.contains("git commit: Staged changes"), "{reason}");
+    assert!(reason.contains("+FRESH = 1"), "{reason}");
+    assert!(reason.contains("nothing is staged yet"), "{reason}");
+}
+
+#[test]
+fn should_leave_the_index_untouched_when_it_replays_git_add() {
+    let sandbox = Sandbox::new();
+    sandbox.write_file("fresh.py", "FRESH = 1\n");
+
+    sandbox.run_hook("git add -A && git commit -m \"add fresh\"");
+
+    let staged = sandbox
+        .command("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(&sandbox.repo)
+        .output()
+        .expect("runs git");
+    assert!(
+        staged.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&staged.stdout)
+    );
+}
+
+fn staged_names(sandbox: &Sandbox) -> Vec<u8> {
+    sandbox
+        .command("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(&sandbox.repo)
+        .output()
+        .expect("runs git")
+        .stdout
+}
+
+#[test]
+fn should_show_the_deletion_when_git_rm_runs_in_the_same_command_as_the_commit() {
+    let sandbox = Sandbox::new();
+
+    let reason = sandbox.reason_of(sandbox.run_hook("git rm app.py && git commit -m drop"));
+
+    assert!(reason.contains("-print(\"v1\")"), "{reason}");
+    assert!(
+        sandbox.repo.join("app.py").exists(),
+        "the gate must not delete files"
+    );
+    assert!(staged_names(&sandbox).is_empty());
+}
+
+#[test]
+fn should_show_the_rename_when_git_mv_runs_in_the_same_command_as_the_commit() {
+    let sandbox = Sandbox::new();
+
+    let reason =
+        sandbox.reason_of(sandbox.run_hook("git mv app.py main.py && git commit -m rename"));
+
+    assert!(reason.contains("main.py"), "{reason}");
+    assert!(
+        sandbox.repo.join("app.py").exists(),
+        "the gate must not move files"
+    );
+    assert!(!sandbox.repo.join("main.py").exists());
+}
+
+#[test]
+fn should_show_the_named_paths_only_when_commit_names_files() {
+    let sandbox = Sandbox::new();
+    sandbox.write_file("app.py", "print(\"v2\")\n");
+    sandbox.write_file("other.py", "OTHER = 1\n");
+    sandbox.git(&sandbox.repo, &["add", "other.py"]);
+
+    let reason = sandbox.reason_of(sandbox.run_hook("git commit app.py -m bump"));
+
+    assert!(reason.contains("+print(\"v2\")"), "{reason}");
+    assert!(!reason.contains("OTHER = 1"), "{reason}");
+}
+
+#[test]
+fn should_warn_when_a_stash_runs_before_the_commit() {
+    let sandbox = Sandbox::new();
+    sandbox.stage_clean_change();
+
+    let reason = sandbox.reason_of(sandbox.run_hook("git stash && git commit -m x"));
+
+    assert!(reason.contains("git stash"), "{reason}");
+    assert!(reason.contains("may not match"), "{reason}");
+}
+
+#[test]
 fn should_exit_silently_when_command_is_git_push() {
     let sandbox = Sandbox::new();
 
