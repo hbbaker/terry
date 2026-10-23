@@ -4,7 +4,7 @@ import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 import type { GateState, PaneDecision, Review, ReviewSection, ReviewStage } from '../types'
 import { TERRY_ALERT, TERRY_CALM } from './art'
 import { fitFiles, splitPatch } from './patch'
-import { buildRows } from './rows'
+import { buildRows, toBlocks } from './rows'
 import type { Row } from './rows'
 import { lastOffset, nextOffset } from './scroll'
 
@@ -224,13 +224,6 @@ function scrollRowsFrom(options: PluginOptions): number {
   return typeof rows === 'number' && Number.isFinite(rows) && rows >= 1 ? Math.round(rows) : DEFAULT_SCROLL_ROWS
 }
 
-/** An added or removed line is padded to the pane's width, so its background is a full bar. */
-function drawnText(row: Row, columns: number): string {
-  if (row.text === '') return ' '
-  const isBar = row.kind === 'added' || row.kind === 'removed'
-  return isBar ? row.text.padEnd(columns) : row.text
-}
-
 function headerRows(current: Review): number {
   if (current.stage !== 'pane') return 0
   return current.decision === 'pending' ? HEADER_ROWS_PENDING : HEADER_ROWS_ANSWERED
@@ -241,7 +234,7 @@ function windowRowsOf(current: Review, bodyRows: number): number {
   return Math.max(1, bodyRows - headerRows(current))
 }
 
-type RowStyle = { bold?: boolean; color?: string; backgroundColor?: string; dimColor?: boolean }
+type RowStyle = { bold?: boolean; color?: string; dimColor?: boolean }
 
 const ROW_STYLES: Record<Row['kind'], RowStyle> = {
   blank: {},
@@ -253,9 +246,10 @@ const ROW_STYLES: Record<Row['kind'], RowStyle> = {
   'lint-info': { dimColor: true },
   file: { bold: true, color: 'warning' },
   binary: { dimColor: true },
-  added: { backgroundColor: 'diffAdded' },
-  removed: { backgroundColor: 'diffRemoved' },
-  hunk: { color: 'suggestion' },
+  added: {},
+  removed: {},
+  hunk: {},
+  meta: {},
   context: {},
   omitted: { color: 'warning' },
 }
@@ -343,7 +337,7 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const { Box, Button, Text, Code } = $.ui.resolve(e)
     const current = await read($, review)
     if (current === null) {
       return <Text dimColor>No diff yet. Terry shows one here when Claude asks to commit or open a PR.</Text>
@@ -391,11 +385,15 @@ export const register: Register = (on, options) => {
             <Box height={1} />
           </Box>
         )}
-        {shown.map(row => (
-          <Text {...ROW_STYLES[row.kind]} wrap="truncate-end">
-            {drawnText(row, paneColumns)}
-          </Text>
-        ))}
+        {toBlocks(shown).map(block =>
+          block.type === 'diff' ? (
+            <Code format="diff" path={block.path} source={block.source} wrap="truncate-end" />
+          ) : (
+            <Text {...ROW_STYLES[block.row.kind]} wrap="truncate-end">
+              {block.row.text === '' ? ' ' : block.row.text}
+            </Text>
+          ),
+        )}
         {/* One row more than the window shows: the engine then has something to scroll, so its
             arrow, page and Home/End keys reach the `ui.scroll` hook above. */}
         <Text> </Text>
