@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { lastOffset, nextOffset } from '../hooks/scroll'
+import { lastOffset, nextColumn, nextOffset } from '../hooks/scroll'
 
 const TREE = { totalRows: 300, windowRows: 37 }
 const WHEEL = { contentRows: 41, isWheel: true }
@@ -38,4 +38,14 @@ test('should jump to the start and the end when Home and End are pressed', () =>
 test('should stay at the top when the whole review fits the window', () => {
   expect(lastOffset(10, 37)).toBe(0)
   expect(nextOffset(0, { ...WHEEL, by: 1 }, 5, 10, 37)).toBe(0)
+})
+
+test('should move the diff sideways by one step when the right button is pressed', () => {
+  expect(nextColumn(0, 1, 20, 100)).toBe(20)
+  expect(nextColumn(20, -1, 20, 100)).toBe(0)
+})
+
+test('should stop at the left edge and at the furthest column', () => {
+  expect(nextColumn(5, -1, 20, 100)).toBe(0)
+  expect(nextColumn(90, 1, 20, 100)).toBe(100)
 })

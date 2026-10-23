@@ -23,3 +23,8 @@ export function nextOffset(
   const rows = move.isWheel ? move.by * rowsPerTick : move.by
   return Math.min(last, Math.max(0, current + rows))
 }
+
+/** Where the diff's left edge lands after a sideways step of `step` columns, `-1` or `1` times. */
+export function nextColumn(current: number, direction: -1 | 1, step: number, last: number): number {
+  return Math.min(last, Math.max(0, current + direction * step))
+}

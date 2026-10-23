@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { buildRows, chunkText, toBlocks } from '../hooks/rows'
+import { buildRows, chunkText, lastColumn, toBlocks } from '../hooks/rows'
 import type { Review } from '../types'
 
 const REVIEW: Review = {
@@ -99,4 +99,29 @@ test('should start the Code block with a header when the window begins inside a 
   const diffs = toBlocks(fromAdded).filter(block => block.type === 'diff')
 
   expect(diffs[0]?.source).toBe('@@ -2,0 +1,1 @@\n+x = 2')
+})
+
+const WIDE: Review = {
+  ...REVIEW,
+  sections: [{ ...REVIEW.sections[0]!, files: [{ path: 'w.py', hunks: '@@ -1 +1 @@\n-' + 'o'.repeat(10) + '\n+' + '0123456789'.repeat(6) }], omittedFiles: 0 }],
+}
+
+test('should cut the left columns of each code line and keep its marker', () => {
+  const blocks = toBlocks(buildRows(WIDE, 80), 5)
+
+  const source = blocks.find(block => block.type === 'diff')?.source
+  expect(source).toBe('@@ -1,1 +1,1 @@\n-ooooo\n+56789' + '0123456789'.repeat(5))
+})
+
+test('should leave the hunk header and the text of other rows as they are when the diff is cut', () => {
+  const rows = buildRows(WIDE, 80)
+
+  const texts = toBlocks(rows, 5).flatMap(block => (block.type === 'row' ? [block.row.text] : []))
+
+  expect(texts).toContain('w.py')
+})
+
+test('should stop sideways scrolling when only the last columns of the longest line are left', () => {
+  expect(lastColumn(buildRows(WIDE, 80))).toBe(60 - 20)
+  expect(lastColumn(buildRows({ ...WIDE, sections: [] }, 80))).toBe(0)
 })
