@@ -55,6 +55,16 @@ pub struct GatedAction {
     pub repo_dir: PathBuf,
     /// The words after the subcommand.
     pub args: Vec<String>,
+    /// For a commit: each earlier git command in the same command line and folder. Claude Code
+    /// runs the gate before the command, so their effects have not happened yet.
+    pub preceding_git: Vec<GitStep>,
+}
+
+/// One git command: the subcommand and the words after it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitStep {
+    pub subcommand: String,
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +195,7 @@ pub fn find_gated_actions(command: &str, cwd: &Path) -> Vec<GatedAction> {
                 kind: ActionKind::Unparsed,
                 repo_dir: cwd.to_path_buf(),
                 args: Vec::new(),
+                preceding_git: Vec::new(),
             }]
         } else {
             Vec::new()
@@ -192,6 +203,7 @@ pub fn find_gated_actions(command: &str, cwd: &Path) -> Vec<GatedAction> {
     };
 
     let mut actions = Vec::new();
+    let mut steps: Vec<(PathBuf, GitStep)> = Vec::new();
     let mut current_dir = cwd.to_path_buf();
     for segment in split_segments(tokens) {
         let Some((first, rest)) = strip_wrappers(&segment).split_first() else {
@@ -205,7 +217,25 @@ pub fn find_gated_actions(command: &str, cwd: &Path) -> Vec<GatedAction> {
             "cd" | "pushd" if !rest.is_empty() => {
                 current_dir = paths::resolve_arg(&current_dir, &rest[0]);
             }
-            "git" => actions.extend(parse_git(rest, &current_dir)),
+            "git" => {
+                if let Some(mut action) = parse_git(rest, &current_dir) {
+                    action.preceding_git = steps
+                        .iter()
+                        .filter(|(repo_dir, _)| *repo_dir == action.repo_dir)
+                        .map(|(_, step)| step.clone())
+                        .collect();
+                    actions.push(action);
+                }
+                if let Some((subcommand, repo_dir, step_args)) =
+                    split_git_subcommand(rest, &current_dir)
+                {
+                    let step = GitStep {
+                        subcommand: subcommand.to_owned(),
+                        args: step_args.to_vec(),
+                    };
+                    steps.push((repo_dir, step));
+                }
+            }
             "gh" => actions.extend(parse_gh(rest, &current_dir)),
             _ if SHELL_COMMANDS.contains(&program) => {
                 for argument in rest.iter().filter(|argument| !argument.starts_with('-')) {
@@ -244,6 +274,24 @@ pub fn runs_terry_exclude(command: &str) -> bool {
 }
 
 fn parse_git(args: &[String], cwd: &Path) -> Option<GatedAction> {
+    let (subcommand, repo_dir, rest) = split_git_subcommand(args, cwd)?;
+    match subcommand {
+        "commit" => Some(GatedAction {
+            kind: ActionKind::Commit,
+            repo_dir,
+            args: rest.to_vec(),
+            preceding_git: Vec::new(),
+        }),
+        _ => None,
+    }
+}
+
+/// Skips git's global options. Gives the subcommand, the folder (`-C` applied) and the words
+/// after the subcommand.
+fn split_git_subcommand<'a>(
+    args: &'a [String],
+    cwd: &Path,
+) -> Option<(&'a str, PathBuf, &'a [String])> {
     let mut repo_dir = cwd.to_path_buf();
     let mut index = 0;
     while index < args.len() && args[index].starts_with('-') {
@@ -258,15 +306,7 @@ fn parse_git(args: &[String], cwd: &Path) -> Option<GatedAction> {
         }
     }
     let (subcommand, rest) = args.get(index..)?.split_first()?;
-    let kind = match subcommand.as_str() {
-        "commit" => ActionKind::Commit,
-        _ => return None,
-    };
-    Some(GatedAction {
-        kind,
-        repo_dir,
-        args: rest.to_vec(),
-    })
+    Some((subcommand.as_str(), repo_dir, rest))
 }
 
 fn parse_gh(args: &[String], cwd: &Path) -> Option<GatedAction> {
@@ -278,6 +318,7 @@ fn parse_gh(args: &[String], cwd: &Path) -> Option<GatedAction> {
         kind,
         repo_dir: cwd.to_path_buf(),
         args: args[after + 1..].to_vec(),
+        preceding_git: Vec::new(),
     };
     match args[group_index].as_str() {
         "api" => is_api_write(&args[group_index + 1..])
