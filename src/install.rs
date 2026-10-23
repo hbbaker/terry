@@ -5,7 +5,7 @@
 //!    command for this system and asks; `--yes` installs without asking.
 //! 3. Adds `git/delta.gitconfig` to `~/.gitconfig` with an `include.path`.
 //! 4. Points `~/.claude/settings.json` at this binary: two PreToolUse hooks and `ask` rules for
-//!    commit, push and `gh pr`. A backup goes to `~/.claude/backups/` first. The file is written
+//!    commit and `gh pr`. A backup goes to `~/.claude/backups/` first. The file is written
 //!    back with its keys in A-Z order (serde_json keeps no key order).
 //! 5. Links `~/.local/bin/terry` to this binary, so `terry exclude` works in any folder.
 //! 6. Installs the terry pane plugin from `plugin/` (skip with `--no-plugin`).
@@ -27,13 +27,14 @@ const EDIT_MATCHER: &str = "Edit|Write|MultiEdit|NotebookEdit";
 const BASH_HOOK_TIMEOUT_SECONDS: u64 = 90;
 const EDIT_HOOK_TIMEOUT_SECONDS: u64 = 10;
 // Ask rules win over allow rules, so these keep a prompt even where a project allows the command.
-const ASK_RULES: [&str; 5] = [
-    "Bash(git push *)",
+const ASK_RULES: [&str; 4] = [
     "Bash(git commit *)",
     "Bash(gh pr create *)",
     "Bash(gh pr edit *)",
     "Bash(gh pr merge *)",
 ];
+// Ask rule of an older terry that gated pushes; a settings file that has it loses it.
+const RETIRED_ASK_RULES: [&str; 1] = ["Bash(git push *)"];
 // Hook scripts of the Python terry; a hook entry that runs one is replaced.
 const OLD_HOOK_SCRIPTS: [&str; 2] = ["diff-gate.py", "lint-fix-gate.py"];
 const SMOKE_TEST_CALL: &str =
@@ -125,7 +126,7 @@ fn install(options: &Options) -> Result<(), String> {
 
     println!(
         "\nterry is set up. Start a new Claude Code session (or run /reload-plugins in an open one).\n\
-         Claude's git commit, git push and gh pr create/edit/merge now stop for your review.\n\
+         Claude's git commit and gh pr create/edit/merge now stop for your review.\n\
          To turn terry off in a folder, run `terry exclude` there in your own terminal."
     );
     Ok(())
@@ -424,6 +425,7 @@ fn configure(settings: &mut Value, binary: &Path) -> Result<(), String> {
         .or_insert_with(|| json!([]))
         .as_array_mut()
         .ok_or("settings.json: \"permissions.ask\" is not a list")?;
+    ask.retain(|existing| !RETIRED_ASK_RULES.iter().any(|rule| existing == rule));
     for rule in ASK_RULES {
         if !ask.iter().any(|existing| existing == rule) {
             ask.push(json!(rule));
@@ -494,7 +496,12 @@ mod tests {
         assert_eq!(settings["permissions"]["allow"], json!(["Read"]));
         assert_eq!(
             settings["permissions"]["ask"].as_array().map(Vec::len),
-            Some(5)
+            Some(4)
+        );
+        assert!(
+            !settings["permissions"]["ask"]
+                .as_array()
+                .is_some_and(|ask| ask.iter().any(|rule| rule == "Bash(git push *)"))
         );
     }
 
@@ -510,7 +517,7 @@ mod tests {
         );
         assert_eq!(
             settings["permissions"]["ask"].as_array().map(Vec::len),
-            Some(5)
+            Some(4)
         );
     }
 

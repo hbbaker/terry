@@ -1,7 +1,7 @@
 /** One changed file: its path and its unified-diff hunks (empty for a binary or mode-only change). */
 export type ReviewFile = { path: string; hunks: string }
 
-/** One gated action of the call (a commit, a push, ...), as the pane draws it. */
+/** One gated action of the call (a commit, a PR create, ...), as the pane draws it. */
 export type ReviewSection = {
   title: string
   notes: string[]

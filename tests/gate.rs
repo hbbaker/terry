@@ -304,65 +304,10 @@ fn should_return_ask_with_staged_diff_when_command_is_git_commit() {
 }
 
 #[test]
-fn should_return_ask_with_unpushed_commits_when_command_is_git_push_with_upstream() {
-    let sandbox = Sandbox::new();
-    sandbox.write_file("app.py", "print(\"v3\")\n");
-    sandbox.git(&sandbox.repo, &["commit", "--quiet", "-am", "bump to v3"]);
-
-    let reason = sandbox.reason_of(sandbox.run_hook("git push"));
-
-    assert!(
-        reason.contains("What origin/main gains from main"),
-        "{reason}"
-    );
-    assert!(reason.contains("bump to v3"), "{reason}");
-    assert!(reason.contains("+print(\"v3\")"), "{reason}");
-}
-
-#[test]
-fn should_compare_with_default_branch_when_push_creates_new_branch() {
-    let sandbox = Sandbox::new();
-    sandbox.git(&sandbox.repo, &["checkout", "--quiet", "-b", "feat/x"]);
-    sandbox.write_file("feature.py", "FEATURE = True\n");
-    sandbox.git(&sandbox.repo, &["add", "feature.py"]);
-    sandbox.git(&sandbox.repo, &["commit", "--quiet", "-m", "add feature"]);
-
-    let reason = sandbox.reason_of(sandbox.run_hook("git push -u origin feat/x"));
-
-    assert!(
-        reason.contains("New branch origin/feat/x, compared with origin/main"),
-        "{reason}"
-    );
-    assert!(reason.contains("+FEATURE = True"), "{reason}");
-}
-
-#[test]
-fn should_match_push_when_it_is_chained_after_cd() {
-    let sandbox = Sandbox::new();
-    let command = format!("cd {} && git status && git push", sandbox.repo.display());
-
-    let reason = sandbox.reason_of(sandbox.run_hook_in(&command, Path::new("/"), None));
-
-    assert!(reason.contains("git push"), "{reason}");
-    assert!(!reason.contains("Could not build the diff"), "{reason}");
-}
-
-#[test]
-fn should_match_push_when_it_runs_inside_bash_c() {
+fn should_exit_silently_when_command_is_git_push() {
     let sandbox = Sandbox::new();
 
-    let reason = sandbox.reason_of(sandbox.run_hook("bash -c 'git push origin main'"));
-
-    assert!(reason.contains("git push"), "{reason}");
-}
-
-#[test]
-fn should_warn_when_push_is_forced() {
-    let sandbox = Sandbox::new();
-
-    let reason = sandbox.reason_of(sandbox.run_hook("git push --force-with-lease origin main"));
-
-    assert!(reason.contains("FORCE PUSH"), "{reason}");
+    assert!(sandbox.run_hook("git push").is_none());
 }
 
 #[test]
@@ -411,7 +356,7 @@ fn should_return_ask_with_error_text_when_cwd_is_not_a_git_repo() {
     let not_a_repo = sandbox.root.join("plain");
     fs::create_dir_all(&not_a_repo).expect("makes the folder");
 
-    let reason = sandbox.reason_of(sandbox.run_hook_in("git push", &not_a_repo, None));
+    let reason = sandbox.reason_of(sandbox.run_hook_in("git commit -m x", &not_a_repo, None));
 
     assert!(reason.contains("Could not build the diff"), "{reason}");
 }
