@@ -1,12 +1,25 @@
-/** A wheel move on the pane, in the rows `ui.scroll` reports. */
-export type WheelMove = { offset: number; by: number; bodyRows: number; contentRows: number }
+/** A move of the pane's window, as `ui.scroll` reports it. */
+export type PaneMove = { by: number; contentRows: number; isWheel: boolean }
+
+/** Rows past the visible window; the pane keeps its own place, so this is the most it moves. */
+export function lastOffset(totalRows: number, windowRows: number): number {
+  return Math.max(0, totalRows - windowRows)
+}
 
 /**
- * Where the pane's window lands when each wheel row counts `rowsPerTick` rows. `offset`
- * already holds one row per tick (the engine's own move), so the rest is added on top,
- * then kept inside the tree.
+ * Where the first shown row lands after `move`. A wheel tick counts `rowsPerTick` rows. The
+ * pane draws one row more than it shows, so a move of exactly `contentRows` is Home or End
+ * (a page key moves one row less); that jumps to the start or the end.
  */
-export function wheelOffset(move: WheelMove, rowsPerTick: number): number {
-  const lastOffset = Math.max(0, move.contentRows - move.bodyRows)
-  return Math.min(lastOffset, Math.max(0, move.offset + move.by * (rowsPerTick - 1)))
+export function nextOffset(
+  current: number,
+  move: PaneMove,
+  rowsPerTick: number,
+  totalRows: number,
+  windowRows: number,
+): number {
+  const last = lastOffset(totalRows, windowRows)
+  if (!move.isWheel && Math.abs(move.by) === move.contentRows) return move.by < 0 ? 0 : last
+  const rows = move.isWheel ? move.by * rowsPerTick : move.by
+  return Math.min(last, Math.max(0, current + rows))
 }
