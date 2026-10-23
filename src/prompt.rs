@@ -206,7 +206,7 @@ pub fn lint_denial(command: &str, failing: &[&ActionReview]) -> String {
         String::new(),
         "Next steps:".to_owned(),
         "1. Fix each problem with the Edit tool. A lint-fix gate is now on for this repo, so the user approves every edit. Do not use auto-fix commands; they also need approval.".to_owned(),
-        "2. For a commit, stage the fixed files with git add. For a push or PR, commit the fixes first.".to_owned(),
+        "2. For a commit, stage the fixed files with git add. For a PR, commit the fixes first.".to_owned(),
         "3. Run the same command again. The gate lints again and, if clean, shows the user the diff for approval.".to_owned(),
     ]);
     lines.join("\n")

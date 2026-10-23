@@ -1,7 +1,7 @@
 {
   "name": "terry",
   "version": "0.1.0",
-  "description": "A scrollable full-diff pane beside the chat whenever the terry gate asks you to approve a commit, push or PR",
+  "description": "A scrollable full-diff pane beside the chat whenever the terry gate asks you to approve a commit or PR",
   "types": "./types/index.d.ts",
   "userConfig": {
     "scrollRows": {
