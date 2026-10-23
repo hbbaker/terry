@@ -1,25 +1,41 @@
 import { expect, test } from 'claude-code/testing'
 
-import { wheelOffset } from '../hooks/scroll'
+import { lastOffset, nextOffset } from '../hooks/scroll'
 
-const TREE = { bodyRows: 40, contentRows: 300 }
+const TREE = { totalRows: 300, windowRows: 37 }
+const WHEEL = { contentRows: 41, isWheel: true }
+const KEY = { contentRows: 41, isWheel: false }
 
 test('should move the set number of rows when one wheel tick scrolls down', () => {
-  expect(wheelOffset({ ...TREE, offset: 11, by: 1 }, 5)).toBe(15)
+  expect(nextOffset(10, { ...WHEEL, by: 1 }, 5, TREE.totalRows, TREE.windowRows)).toBe(15)
 })
 
 test('should move the set number of rows when one wheel tick scrolls up', () => {
-  expect(wheelOffset({ ...TREE, offset: 9, by: -1 }, 5)).toBe(5)
+  expect(nextOffset(10, { ...WHEEL, by: -1 }, 5, TREE.totalRows, TREE.windowRows)).toBe(5)
 })
 
 test('should stop at the top when the move would pass it', () => {
-  expect(wheelOffset({ ...TREE, offset: 1, by: -1 }, 5)).toBe(0)
+  expect(nextOffset(2, { ...WHEEL, by: -1 }, 5, TREE.totalRows, TREE.windowRows)).toBe(0)
 })
 
 test('should stop at the last full window when the move would pass the end', () => {
-  expect(wheelOffset({ ...TREE, offset: 259, by: 1 }, 5)).toBe(260)
+  expect(nextOffset(260, { ...WHEEL, by: 1 }, 5, TREE.totalRows, TREE.windowRows)).toBe(263)
 })
 
-test('should keep the engine move when the speed is one row per tick', () => {
-  expect(wheelOffset({ ...TREE, offset: 12, by: 2 }, 1)).toBe(12)
+test('should move one row per arrow key', () => {
+  expect(nextOffset(10, { ...KEY, by: 1 }, 5, TREE.totalRows, TREE.windowRows)).toBe(11)
+})
+
+test('should move a page when a page key is pressed', () => {
+  expect(nextOffset(10, { ...KEY, by: 40 }, 5, TREE.totalRows, TREE.windowRows)).toBe(50)
+})
+
+test('should jump to the start and the end when Home and End are pressed', () => {
+  expect(nextOffset(100, { ...KEY, by: -41 }, 5, TREE.totalRows, TREE.windowRows)).toBe(0)
+  expect(nextOffset(100, { ...KEY, by: 41 }, 5, TREE.totalRows, TREE.windowRows)).toBe(263)
+})
+
+test('should stay at the top when the whole review fits the window', () => {
+  expect(lastOffset(10, 37)).toBe(0)
+  expect(nextOffset(0, { ...WHEEL, by: 1 }, 5, 10, 37)).toBe(0)
 })
