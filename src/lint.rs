@@ -21,9 +21,9 @@ use crate::text::strip_ansi;
 const PROJECT_VENV_DIRS: [&str; 2] = [".venv", "venv"];
 const LINT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LINT_FILES: usize = 200;
-const PYTHON_SUFFIXES: [&str; 2] = ["py", "pyi"];
+pub const PYTHON_SUFFIXES: [&str; 2] = ["py", "pyi"];
 const SHELL_SUFFIXES: [&str; 2] = ["sh", "bash"];
-const ESLINT_SUFFIXES: [&str; 8] = ["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"];
+pub const ESLINT_SUFFIXES: [&str; 8] = ["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"];
 const ESLINT_CONFIG_NAMES: [&str; 6] = [
     "eslint.config.js",
     "eslint.config.mjs",
@@ -160,7 +160,7 @@ pub fn lint_patch(repo_root: &Path, patch: &str) -> LintReport {
     report
 }
 
-fn with_suffix(paths: &[String], suffixes: &[&str]) -> Vec<String> {
+pub fn with_suffix(paths: &[String], suffixes: &[&str]) -> Vec<String> {
     paths
         .iter()
         .filter(|path| {
@@ -448,7 +448,7 @@ fn run_eslint(repo_root: &Path, files: &[String]) -> Result<ToolRun, String> {
     Ok(run)
 }
 
-fn parse_eslint_json(repo_root: &Path, output: &str) -> Result<Vec<LintProblem>, String> {
+pub fn parse_eslint_json(repo_root: &Path, output: &str) -> Result<Vec<LintProblem>, String> {
     let results = parse_json("eslint", output, "[]")?;
     let mut problems = Vec::new();
     for result in results.as_array().into_iter().flatten() {
@@ -471,50 +471,4 @@ fn parse_eslint_json(repo_root: &Path, output: &str) -> Result<Vec<LintProblem>,
         }
     }
     Ok(problems)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn should_describe_a_problem_with_its_place_tool_and_code() {
-        let problem = LintProblem {
-            path: "app.py".to_owned(),
-            line: 1,
-            column: 8,
-            tool: "ruff".to_owned(),
-            code: "F401".to_owned(),
-            message: "`os` imported but unused".to_owned(),
-            blocking: true,
-        };
-        assert_eq!(
-            problem.describe(),
-            "app.py:1:8 [ruff F401] `os` imported but unused"
-        );
-    }
-
-    #[test]
-    fn should_skip_eslint_messages_that_have_no_line() {
-        let output = r#"[{"filePath": "/r/a.ts", "messages": [
-            {"message": "File ignored", "severity": 1},
-            {"line": 2, "column": 7, "ruleId": "no-unused-vars", "message": "x", "severity": 2}
-        ]}]"#;
-        let problems = parse_eslint_json(Path::new("/r"), output).expect("parses");
-        assert_eq!(problems.len(), 1);
-        assert_eq!(problems[0].describe(), "a.ts:2:7 [eslint no-unused-vars] x");
-        assert!(problems[0].blocking);
-    }
-
-    #[test]
-    fn should_pick_files_by_suffix() {
-        let files = vec![
-            "a.py".to_owned(),
-            "b.ts".to_owned(),
-            "c.sh".to_owned(),
-            "README".to_owned(),
-        ];
-        assert_eq!(with_suffix(&files, &PYTHON_SUFFIXES), vec!["a.py"]);
-        assert_eq!(with_suffix(&files, &ESLINT_SUFFIXES), vec!["b.ts"]);
-    }
 }

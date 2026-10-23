@@ -36,7 +36,7 @@ pub fn build(action: &GatedAction) -> Option<Result<DiffResult, String>> {
 }
 
 /// `-a`, `-am` and the like, or `--all`: the commit stages tracked changes itself.
-fn is_stage_all_flag(arg: &str) -> bool {
+pub fn is_stage_all_flag(arg: &str) -> bool {
     arg == "--all"
         || arg.strip_prefix('-').is_some_and(|letters| {
             letters.contains('a') && letters.chars().all(|c| c.is_ascii_alphabetic())
@@ -91,7 +91,7 @@ fn build_commit(action: &GatedAction) -> Result<DiffResult, String> {
 }
 
 /// The value of the first of `names` in `args`: `--base main`, `-B main` or `--base=main`.
-fn flag_value<'a>(args: &'a [String], names: &[&str]) -> Option<&'a str> {
+pub fn flag_value<'a>(args: &'a [String], names: &[&str]) -> Option<&'a str> {
     for (index, arg) in args.iter().enumerate() {
         if names.contains(&arg.as_str()) && index + 1 < args.len() {
             return Some(&args[index + 1]);
@@ -166,7 +166,7 @@ fn is_pr_selector(arg: &str) -> bool {
         })
 }
 
-fn find_pr_selector(args: &[String]) -> Option<&str> {
+pub fn find_pr_selector(args: &[String]) -> Option<&str> {
     match args.first() {
         Some(first) if !first.starts_with('-') => Some(first),
         _ => args
@@ -219,57 +219,4 @@ fn build_existing_pr(action: &GatedAction) -> Result<DiffResult, String> {
         notes,
         lintable: false,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn strings(words: &[&str]) -> Vec<String> {
-        words.iter().map(|word| (*word).to_owned()).collect()
-    }
-
-    #[test]
-    fn should_spot_stage_all_flags_when_commit_has_them() {
-        for flag in ["-a", "-am", "--all", "-va"] {
-            assert!(is_stage_all_flag(flag), "{flag}");
-        }
-        for flag in ["-m", "--amend", "-", "-a1"] {
-            assert!(!is_stage_all_flag(flag), "{flag}");
-        }
-    }
-
-    #[test]
-    fn should_read_a_flag_value_in_each_spelling() {
-        assert_eq!(
-            flag_value(&strings(&["--base", "dev"]), &["--base", "-B"]),
-            Some("dev")
-        );
-        assert_eq!(
-            flag_value(&strings(&["-B", "dev"]), &["--base", "-B"]),
-            Some("dev")
-        );
-        assert_eq!(
-            flag_value(&strings(&["--base=dev"]), &["--base", "-B"]),
-            Some("dev")
-        );
-        assert_eq!(
-            flag_value(&strings(&["--title", "x"]), &["--base", "-B"]),
-            None
-        );
-    }
-
-    #[test]
-    fn should_find_the_pr_selector_when_command_names_one() {
-        assert_eq!(find_pr_selector(&strings(&["20", "--merge"])), Some("20"));
-        assert_eq!(find_pr_selector(&strings(&["--merge", "#20"])), Some("#20"));
-        assert_eq!(
-            find_pr_selector(&strings(&["--squash", "https://github.com/o/r/pull/7"])),
-            Some("https://github.com/o/r/pull/7")
-        );
-        assert_eq!(
-            find_pr_selector(&strings(&["--merge", "--delete-branch"])),
-            None
-        );
-    }
 }
