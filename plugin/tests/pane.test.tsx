@@ -50,7 +50,7 @@ test('should say there is no diff when nothing was reviewed', async $ => {
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
 
   expect((await ui.find({ type: 'Text', text: /No diff yet/ }))?.text).toContain(
-    'commit, push or open a PR',
+    'commit or open a PR',
   )
   await ui.unmount()
 })
@@ -148,6 +148,24 @@ test('should keep the pane open with Approve and Reject when the gate asks for a
   expect(await ui.find({ key: 'reject' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'app.py' })).toBeDefined()
   await ui.unmount()
+})
+
+test('should keep the Approve and Reject bar on the top row of the window when the diff is scrolled', async ($, on) => {
+  await reviewInPane($, on)
+
+  const atTop = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const drawnAtTop = JSON.stringify(await atTop.drawn())
+  await atTop.unmount()
+  const scrolled = await $.ui.mount({
+    ...PANE,
+    surface: 'terminal',
+    props: { ...PANE.props, scroll: { offset: 25, bodyRows: 40 } },
+  })
+
+  expect(drawnAtTop).toContain('"top":1')
+  expect(JSON.stringify(await scrolled.drawn())).toContain('"top":25')
+  expect(await scrolled.find({ key: 'approve' })).toBeDefined()
+  await scrolled.unmount()
 })
 
 test('should write the approval, close the pane and tell Claude to run the command again when Approve is pressed', async ($, on) => {

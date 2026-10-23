@@ -33,6 +33,9 @@ const GATE_OFF_PREFIX = 'terry is off'
 // Columns between the art and the band's words, and the fewest the words need beside the art.
 const BAND_ART_GAP = 2
 const BAND_MIN_TEXT_COLUMNS = 30
+// The Approve and Reject bar stays on the pane's first visible row; the title above it is the
+// only part that scrolls away. Rows the bar's place keeps in the flow so nothing moves under it.
+const BAR_ROW_AFTER_TITLE = 1
 // A snowy owl's blue-white; the alert pose takes the theme's warning colour instead.
 const CALM_COLOR = '#8FB8ED'
 
@@ -294,15 +297,25 @@ export const register: Register = (on, options) => {
     const { Box, Button, Text, Code } = $.ui.resolve(e)
     const current = await read($, review)
     if (current === null) {
-      return <Text dimColor>No diff yet. Terry shows one here when Claude asks to commit, push or open a PR.</Text>
+      return <Text dimColor>No diff yet. Terry shows one here when Claude asks to commit or open a PR.</Text>
     }
+    const isHolding = current.stage === 'pane' && current.decision === 'pending'
+    const barTop = Math.max(e.props.scroll.offset, BAR_ROW_AFTER_TITLE)
 
     return (
       <Box flexDirection="column">
-        {current.stage === 'pane' && current.decision === 'pending' && (
+        {isHolding && (
           <Box flexDirection="column" marginBottom={1}>
             <Text bold>Read the diff, then answer here. Claude waits for you.</Text>
-            <Box flexDirection="row">
+            <Box height={1} />
+          </Box>
+        )}
+        {isHolding && (
+          // Placed on the window's top row, so the buttons stay in reach while the diff scrolls.
+          // The row of spaces under them hides the diff text that scrolls beneath the bar.
+          <Box position="absolute" top={barTop} left={0} width={e.props.bodyColumns} height={1}>
+            <Text>{' '.repeat(e.props.bodyColumns)}</Text>
+            <Box position="absolute" top={0} left={0} flexDirection="row">
               <Button key="approve" hotkey="a" variant="primary" onPress={() => void approve($, current)}>
                 Approve
               </Button>
@@ -376,7 +389,7 @@ export const register: Register = (on, options) => {
         <Text bold color={CALM_COLOR}>
           Terry is watching
         </Text>
-        <Text dimColor>Commits, pushes and PRs wait for your review.</Text>
+        <Text dimColor>Commits and PRs wait for your review.</Text>
       </Box>
     )
 
@@ -388,9 +401,12 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="row" alignItems="center">
-        <Box flexDirection="column" marginRight={BAND_ART_GAP}>
+        {/* Fixed width and no shrinking: the pane docking narrows the band, and a shrunk owl wraps. */}
+        <Box flexDirection="column" marginRight={BAND_ART_GAP} flexShrink={0} width={artColumns}>
           {art.map(line => (
-            <Text color={holding ? 'warning' : CALM_COLOR}>{line}</Text>
+            <Text color={holding ? 'warning' : CALM_COLOR} wrap="truncate-end">
+              {line}
+            </Text>
           ))}
         </Box>
         {words}
