@@ -128,6 +128,17 @@ test('should show the held command when terry waits for a review in the pane', a
   await band.unmount()
 })
 
+test('should keep the owl at full width when the band is narrow', async ($, on) => {
+  await startSession($, on, ON)
+
+  const band = await $.ui.mount({ ...BAND, props: { ...BAND.props, bodyColumns: 60 } })
+
+  const drawn = JSON.stringify(await band.drawn())
+  expect(drawn).toContain('"flexShrink":0')
+  expect(await band.find({ type: 'Text', text: /◠ ▾ ◠/ })).toBeDefined()
+  await band.unmount()
+})
+
 test('should show only the words when the band is too short for the art', async ($, on) => {
   await startSession($, on, ON)
 
