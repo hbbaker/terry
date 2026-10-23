@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { buildRows, chunkText } from '../hooks/rows'
+import { buildRows, chunkText, toBlocks } from '../hooks/rows'
 import type { Review } from '../types'
 
 const REVIEW: Review = {
@@ -58,10 +58,45 @@ test('should give one row per line of the review, in order, with the kind of eac
   expect(rows[0]?.text).toBe('$ git commit -m x')
 })
 
-test('should count a wrapped diff line as several rows', () => {
+test('should keep a long diff line as one row, for the Code element to truncate', () => {
   const long = { ...REVIEW, sections: [{ ...REVIEW.sections[0]!, files: [{ path: 'a', hunks: '@@ -1 +1 @@\n+' + 'x'.repeat(25) }] }] }
 
   const rows = buildRows(long, 10).filter(row => row.kind === 'added')
 
-  expect(rows.map(row => row.text.length)).toEqual([10, 10, 6])
+  expect(rows.map(row => row.text.length)).toEqual([26])
+})
+
+test('should note the old and new line numbers each diff row stands at', () => {
+  const rows = buildRows(REVIEW, 80).filter(row => row.kind === 'removed' || row.kind === 'added')
+
+  expect(rows.map(row => [row.oldAt, row.newAt])).toEqual([
+    [1, 1],
+    [2, 1],
+  ])
+})
+
+test('should give one Code block per file for the diff rows of the window', () => {
+  const blocks = toBlocks(buildRows(REVIEW, 80))
+
+  const diffs = blocks.filter(block => block.type === 'diff')
+  expect(diffs.map(block => block.path)).toEqual(['app.py'])
+  expect(diffs[0]?.source).toBe('@@ -1,1 +1,1 @@\n-x = 1\n+x = 2')
+})
+
+test('should count the header of a hunk from the rows the window shows', () => {
+  const rows = buildRows(REVIEW, 80)
+  const cutAfterRemoved = rows.slice(rows.findIndex(row => row.kind === 'hunk'), rows.findIndex(row => row.kind === 'added'))
+
+  const diffs = toBlocks(cutAfterRemoved).filter(block => block.type === 'diff')
+
+  expect(diffs[0]?.source).toBe('@@ -1,1 +1,0 @@\n-x = 1')
+})
+
+test('should start the Code block with a header when the window begins inside a hunk', () => {
+  const rows = buildRows(REVIEW, 80)
+  const fromAdded = rows.slice(rows.findIndex(row => row.kind === 'added'), rows.findIndex(row => row.kind === 'added') + 1)
+
+  const diffs = toBlocks(fromAdded).filter(block => block.type === 'diff')
+
+  expect(diffs[0]?.source).toBe('@@ -2,0 +1,1 @@\n+x = 2')
 })

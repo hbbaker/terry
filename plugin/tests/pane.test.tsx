@@ -176,7 +176,7 @@ test('should draw only as many diff rows as fit under the header', async ($, on)
   await reviewInPane($, on, { isPlaced: true, surfaces: ['terminal'], patch: LONG_PATCH })
   const ui = await $.ui.mount({ ...SHORT_PANE, surface: 'terminal' })
 
-  const lines = await ui.findAll({ type: 'Text', text: /^\+LINE_/ })
+  const lines = JSON.stringify(await ui.drawn()).match(/\+LINE_\d+/g) ?? []
 
   // 20 rows less the 3 of the header: the command, a blank, the title and the lint line take
   // the first rows of the 17, so fewer than 17 diff lines show.
