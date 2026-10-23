@@ -4,7 +4,9 @@ import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 import type { GateState, PaneDecision, Review, ReviewSection, ReviewStage } from '../types'
 import { TERRY_ALERT, TERRY_CALM } from './art'
 import { fitFiles, splitPatch } from './patch'
-import { wheelOffset } from './scroll'
+import { buildRows, lastColumn, toBlocks } from './rows'
+import type { Row } from './rows'
+import { lastOffset, nextColumn, nextOffset } from './scroll'
 
 const PANE = 'terry-diff'
 const PANE_TITLE = 'Diff review'
@@ -33,9 +35,14 @@ const GATE_OFF_PREFIX = 'terry is off'
 // Columns between the art and the band's words, and the fewest the words need beside the art.
 const BAND_ART_GAP = 2
 const BAND_MIN_TEXT_COLUMNS = 30
-// The Approve and Reject bar stays on the pane's first visible row; the title above it is the
-// only part that scrolls away. Rows the bar's place keeps in the flow so nothing moves under it.
-const BAR_ROW_AFTER_TITLE = 1
+// Rows above the diff that do not scroll: the title, the buttons and the key hints while the gate
+// waits for an answer; the status line and a blank row once the user answered; none otherwise.
+const HEADER_ROWS_PENDING = 3
+const HEADER_ROWS_ANSWERED = 2
+// Columns one press of the left or right button moves the diff sideways.
+const SIDEWAYS_STEP = 20
+// Columns the pane's text starts in and the width assumed before the first drawing.
+const DEFAULT_PANE_COLUMNS = 80
 // A snowy owl's blue-white; the alert pose takes the theme's warning colour instead.
 const CALM_COLOR = '#8FB8ED'
 
@@ -51,6 +58,8 @@ type CallManifest = {
 const review = atom({ plugin: 'terry', key: 'review' } as const, null)
 const promptReviewFor = atom({ plugin: 'terry', key: 'promptReviewFor' } as const, null)
 const gate = atom({ plugin: 'terry', key: 'gate' } as const, 'unknown')
+const diffRow = atom({ plugin: 'terry', key: 'diffRow' } as const, 0)
+const diffColumn = atom({ plugin: 'terry', key: 'diffColumn' } as const, 0)
 
 async function diffsDir($: EngineInterface): Promise<string | null> {
   const home = await $.env.get('HOME')
@@ -143,7 +152,9 @@ async function showReview($: EngineInterface, toolUseId: string, onlyStage?: Rev
   // Approve closed the pane so the permission prompt for the rerun draws alone; keep it closed.
   if (loaded.stage === 'prompt' && isApprovedInPane(await read($, review), loaded.reviewKey)) return
   await update($, review, () => loaded)
-  // In the pane stage no dialog is up, so the pane may take the keys for its a/r hotkeys.
+  await update($, diffRow, () => 0)
+  await update($, diffColumn, () => 0)
+  // In the pane stage no dialog is up, so the pane may take the keys for its hotkeys.
   const opened = await $.ui.open({
     id: PANE,
     title: PANE_TITLE,
@@ -190,6 +201,12 @@ async function reject($: EngineInterface, current: Review): Promise<void> {
   await $.prompt.fill({ text: `terry: I rejected the diff for: ${current.command}\nReason: ` })
 }
 
+/** The left and right buttons: moves the diff `direction` times `SIDEWAYS_STEP` columns. */
+async function moveSideways($: EngineInterface, current: Review, direction: -1 | 1): Promise<void> {
+  const last = lastColumn(buildRows(current, DEFAULT_PANE_COLUMNS))
+  await update($, diffColumn, place => nextColumn(place, direction, SIDEWAYS_STEP, last))
+}
+
 async function readGateState($: EngineInterface): Promise<GateState> {
   try {
     const { exitCode, stdout } = await $.process.run(['terry', 'status'], { timeoutMs: GATE_STATUS_TIMEOUT_MS })
@@ -217,14 +234,40 @@ function scrollRowsFrom(options: PluginOptions): number {
   return typeof rows === 'number' && Number.isFinite(rows) && rows >= 1 ? Math.round(rows) : DEFAULT_SCROLL_ROWS
 }
 
-function lintColor(line: string): 'success' | 'warning' | 'subtle' {
-  if (line.startsWith('LINT passed')) return 'success'
-  if (line.startsWith('LINT')) return 'warning'
-  return 'subtle'
+function headerRows(current: Review): number {
+  if (current.stage !== 'pane') return 0
+  return current.decision === 'pending' ? HEADER_ROWS_PENDING : HEADER_ROWS_ANSWERED
+}
+
+/** Rows of the diff the pane shows at once, under its fixed header. */
+function windowRowsOf(current: Review, bodyRows: number): number {
+  return Math.max(1, bodyRows - headerRows(current))
+}
+
+type RowStyle = { bold?: boolean; color?: string; dimColor?: boolean }
+
+const ROW_STYLES: Record<Row['kind'], RowStyle> = {
+  blank: {},
+  command: { dimColor: true },
+  title: { bold: true },
+  note: { dimColor: true },
+  'lint-pass': { color: 'success' },
+  'lint-problem': { color: 'warning' },
+  'lint-info': { dimColor: true },
+  file: { bold: true, color: 'warning' },
+  binary: { dimColor: true },
+  added: {},
+  removed: {},
+  hunk: {},
+  meta: {},
+  context: {},
+  omitted: { color: 'warning' },
 }
 
 export const register: Register = (on, options) => {
   const scrollRows = scrollRowsFrom(options)
+  // The pane's text width at its last drawing; `ui.scroll` does not carry it.
+  let paneColumns = DEFAULT_PANE_COLUMNS
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -287,10 +330,20 @@ export const register: Register = (on, options) => {
     return result
   })
 
-  // Wheel ticks move `scrollRows` rows. Keys keep their row or page; $.ui.scroll its distance.
-  on('ui.scroll', { component: 'Pane', requestId: PANE }, ($, e, next) => {
-    if (e.origin.kind !== 'person' || e.pointer === undefined) return next(e)
-    return next({ ...e, offset: wheelOffset(e, scrollRows) })
+  // The pane scrolls its own rows under a fixed header, so the engine's window never moves: this
+  // hook answers without `next` and redraws from the pane's own place. Wheel ticks move
+  // `scrollRows` rows; keys keep their row or page; Home and End jump.
+  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const current = await read($, review)
+    if (current === null) return {}
+    const totalRows = buildRows(current, paneColumns).length
+    const windowRows = windowRowsOf(current, e.bodyRows)
+    const move = { by: e.by, contentRows: e.contentRows, isWheel: e.pointer !== undefined }
+    await update($, diffRow, place => {
+      const moved = nextOffset(place, move, scrollRows, totalRows, windowRows)
+      return Number.isInteger(moved) ? moved : place
+    })
+    return {}
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -299,69 +352,73 @@ export const register: Register = (on, options) => {
     if (current === null) {
       return <Text dimColor>No diff yet. Terry shows one here when Claude asks to commit or open a PR.</Text>
     }
-    const isHolding = current.stage === 'pane' && current.decision === 'pending'
-    const barTop = Math.max(e.props.scroll.offset, BAR_ROW_AFTER_TITLE)
+
+    paneColumns = e.props.bodyColumns
+    const rows = buildRows(current, paneColumns)
+    const windowRows = windowRowsOf(current, e.props.scroll.bodyRows)
+    const first = Math.min(await read($, diffRow), lastOffset(rows.length, windowRows))
+    const shown = rows.slice(first, first + windowRows)
+    const column = Math.min(await read($, diffColumn), lastColumn(rows))
+    const isPending = current.stage === 'pane' && current.decision === 'pending'
 
     return (
       <Box flexDirection="column">
-        {isHolding && (
-          <Box flexDirection="column" marginBottom={1}>
+        {isPending && (
+          <Box flexDirection="column">
             <Text bold>Read the diff, then answer here. Claude waits for you.</Text>
-            <Box height={1} />
-          </Box>
-        )}
-        {isHolding && (
-          // Placed on the window's top row, so the buttons stay in reach while the diff scrolls.
-          // The row of spaces under them hides the diff text that scrolls beneath the bar.
-          <Box position="absolute" top={barTop} left={0} width={e.props.bodyColumns} height={1}>
-            <Text>{' '.repeat(e.props.bodyColumns)}</Text>
-            <Box position="absolute" top={0} left={0} flexDirection="row">
-              <Button key="approve" hotkey="a" variant="primary" onPress={() => void approve($, current)}>
+            <Box flexDirection="row">
+              <Button key="approve" hotkey="y" variant="primary" onPress={() => void approve($, current)}>
                 Approve
               </Button>
               <Box marginLeft={2}>
-                <Button key="reject" hotkey="r" onPress={() => void reject($, current)}>
+                <Button key="reject" hotkey="n" onPress={() => void reject($, current)}>
                   Reject
                 </Button>
               </Box>
+              <Box marginLeft={2}>
+                <Button key="left" hotkey="a" onPress={() => void moveSideways($, current, -1)}>
+                  ◀
+                </Button>
+              </Box>
+              <Box marginLeft={1}>
+                <Button key="right" hotkey="d" onPress={() => void moveSideways($, current, 1)}>
+                  ▶
+                </Button>
+              </Box>
+              <Box marginLeft={2}>
+                <Text dimColor>
+                  rows {first + 1}-{first + shown.length} of {rows.length}
+                  {column > 0 ? `, column ${column + 1}` : ''}
+                </Text>
+              </Box>
             </Box>
+            <Text dimColor>y approve · n reject · a and d scroll sideways</Text>
           </Box>
         )}
         {current.stage === 'pane' && current.decision === 'approved' && (
-          <Text color="success">Approved. Claude runs the command again; confirm it in the permission prompt.</Text>
+          <Box flexDirection="column">
+            <Text color="success">Approved. Claude runs the command again; confirm it in the permission prompt.</Text>
+            <Box height={1} />
+          </Box>
         )}
         {current.stage === 'pane' && current.decision === 'rejected' && (
-          <Text color="warning">Rejected. Add your reason in the prompt box and press Enter.</Text>
-        )}
-        <Text dimColor>$ {current.command}</Text>
-        {current.sections.map(section => (
-          <Box flexDirection="column" marginTop={1}>
-            <Text bold>{section.title}</Text>
-            {section.notes.map(note => (
-              <Text dimColor>{note}</Text>
-            ))}
-            {section.lint.map(line => (
-              <Text color={lintColor(line)}>{line}</Text>
-            ))}
-            {section.files.map(file => (
-              <Box flexDirection="column" marginTop={1}>
-                <Text bold color="warning">
-                  {file.path}
-                </Text>
-                {file.hunks === '' ? (
-                  <Text dimColor>(binary file, rename or mode change)</Text>
-                ) : (
-                  <Code format="diff" path={file.path} source={file.hunks} />
-                )}
-              </Box>
-            ))}
-            {section.omittedFiles > 0 && (
-              <Text color="warning">
-                {section.omittedFiles} more file(s) not drawn. Full diff: delta &lt; {section.patchPath}
-              </Text>
-            )}
+          <Box flexDirection="column">
+            <Text color="warning">Rejected. Add your reason in the prompt box and press Enter.</Text>
+            <Box height={1} />
           </Box>
-        ))}
+        )}
+        {toBlocks(shown, column).map(block =>
+          block.type === 'diff' ? (
+            <Code format="diff" path={block.path} source={block.source} wrap="truncate-end" />
+          ) : (
+            <Text {...ROW_STYLES[block.row.kind]} wrap="truncate-end">
+              {block.row.text === '' ? ' ' : block.row.text}
+            </Text>
+          ),
+        )}
+        {/* One row more than the window shows: the engine then has something to scroll, so its
+            arrow, page and Home/End keys reach the `ui.scroll` hook above. */}
+        <Text> </Text>
       </Box>
     )
   })

@@ -100,11 +100,11 @@ test('should open the pane with the full diff once the gate asks about a commit'
 async function reviewInPane(
   ...[$, on, where = { isPlaced: true, surfaces: ['terminal'] }]: [
     ...Parameters<TestBody>,
-    { isPlaced: boolean; surfaces: RenderSurface[] }?,
+    { isPlaced: boolean; surfaces: RenderSurface[]; patch?: string }?,
   ]
 ) {
   const clock = mock.clock(on)
-  const files: Record<string, string> = { [PATCH_PATH]: PATCH }
+  const files: Record<string, string> = { [PATCH_PATH]: where.patch ?? PATCH }
   const closed: string[] = []
   const submitted: string[] = []
   const filled: string[] = []
@@ -150,22 +150,54 @@ test('should keep the pane open with Approve and Reject when the gate asks for a
   await ui.unmount()
 })
 
-test('should keep the Approve and Reject bar on the top row of the window when the diff is scrolled', async ($, on) => {
-  await reviewInPane($, on)
+const LONG_PATCH = [
+  'diff --git a/big.py b/big.py',
+  '--- a/big.py',
+  '+++ b/big.py',
+  '@@ -0,0 +1,100 @@',
+  ...Array.from({ length: 100 }, (_, index) => `+LINE_${index} = ${index}`),
+  '',
+].join('\n')
+const SHORT_PANE = { ...PANE, props: { ...PANE.props, scroll: { offset: 0, bodyRows: 20 } } }
 
-  const atTop = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  const drawnAtTop = JSON.stringify(await atTop.drawn())
-  await atTop.unmount()
-  const scrolled = await $.ui.mount({
-    ...PANE,
-    surface: 'terminal',
-    props: { ...PANE.props, scroll: { offset: 25, bodyRows: 40 } },
-  })
+test('should draw Approve and Reject above the first diff rows when the pane opens', async ($, on) => {
+  await reviewInPane($, on, { isPlaced: true, surfaces: ['terminal'], patch: LONG_PATCH })
+  const ui = await $.ui.mount({ ...SHORT_PANE, surface: 'terminal' })
 
-  expect(drawnAtTop).toContain('"top":1')
-  expect(JSON.stringify(await scrolled.drawn())).toContain('"top":25')
-  expect(await scrolled.find({ key: 'approve' })).toBeDefined()
-  await scrolled.unmount()
+  const drawn = JSON.stringify(await ui.drawn())
+
+  expect(drawn.indexOf('"key":"approve"')).toBeGreaterThan(-1)
+  expect(drawn.indexOf('"key":"approve"')).toBeLessThan(drawn.indexOf('+LINE_0 = 0'))
+  expect(await ui.find({ type: 'Text', text: /rows 1-\d+ of \d+/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('should shift the diff to the left when the right button is pressed', async ($, on) => {
+  const wide = LONG_PATCH.replace('+LINE_0 = 0', '+' + 'abcdefghij'.repeat(8))
+  await reviewInPane($, on, { isPlaced: true, surfaces: ['terminal'], patch: wide })
+  const ui = await $.ui.mount({ ...SHORT_PANE, surface: 'terminal' })
+  expect(JSON.stringify(await ui.drawn())).toContain('+abcdefghij')
+
+  await ui.press({ key: 'right' })
+
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('+abcdefghijabcdefghij')
+  expect(drawn).not.toContain('+abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij')
+  expect(drawn).toContain('column 21')
+  await ui.unmount()
+})
+
+test('should draw only as many diff rows as fit under the header', async ($, on) => {
+  await reviewInPane($, on, { isPlaced: true, surfaces: ['terminal'], patch: LONG_PATCH })
+  const ui = await $.ui.mount({ ...SHORT_PANE, surface: 'terminal' })
+
+  const lines = JSON.stringify(await ui.drawn()).match(/\+LINE_\d+/g) ?? []
+
+  // 20 rows less the 3 of the header: the command, a blank, the title and the lint line take
+  // the first rows of the 17, so fewer than 17 diff lines show.
+  expect(lines.length).toBeGreaterThan(0)
+  expect(lines.length).toBeLessThanOrEqual(17)
+  await ui.unmount()
 })
 
 test('should write the approval, close the pane and tell Claude to run the command again when Approve is pressed', async ($, on) => {
