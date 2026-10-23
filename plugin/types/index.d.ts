@@ -48,6 +48,8 @@ declare module 'claude-code' {
       gate: GateState
       /** The pane's own scroll place: the index of the first diff row it shows. */
       diffRow: number
+      /** How many columns the diff is scrolled to the left; 0 shows each line from its start. */
+      diffColumn: number
     }
   }
 }

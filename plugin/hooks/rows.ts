@@ -108,6 +108,25 @@ export function buildRows(review: Review, columns: number): Row[] {
 /** What the pane draws for a stretch of its window: one text row, or one run of diff rows. */
 export type Block = { type: 'row'; row: Row } | { type: 'diff'; path: string; source: string }
 
+/** Columns of the longest line that stay in view when the pane is scrolled as far right as it goes. */
+const MIN_VISIBLE_TAIL = 20
+
+/** The furthest the diff scrolls right: until the longest line shows only its last columns. */
+export function lastColumn(rows: Row[]): number {
+  const longest = rows
+    .filter(row => row.kind === 'added' || row.kind === 'removed' || row.kind === 'context')
+    .reduce((widest, row) => Math.max(widest, Array.from(row.text).length - 1), 0)
+  return Math.max(0, longest - MIN_VISIBLE_TAIL)
+}
+
+/** A diff row's text without its first `column` columns; the +, - or space marker stays. */
+function cutLeft(row: Row, column: number): string {
+  const isCode = row.kind === 'added' || row.kind === 'removed' || row.kind === 'context'
+  if (!isCode || column === 0 || row.text === '') return row.text
+  const [marker = '', ...rest] = Array.from(row.text)
+  return marker + rest.slice(column).join('')
+}
+
 const HUNK_CONTEXT = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@(.*)$/
 
 /** A hunk header for the rows of `group`, whose first row stands at the old and new line given. */
@@ -122,7 +141,7 @@ function hunkHeader(group: Row[], first: Row, context: string): string {
  * element refuses a hunk whose header counts do not match its lines, so every hunk the window
  * shows, cut or whole, gets a header counted from the rows that are shown.
  */
-function diffSource(run: Row[]): string {
+function diffSource(run: Row[], column: number): string {
   const groups: { header: Row | undefined; context: string; rows: Row[] }[] = []
   for (const row of run) {
     if (row.kind === 'hunk') {
@@ -138,18 +157,18 @@ function diffSource(run: Row[]): string {
     const first = group.header ?? group.rows[0]
     if (first === undefined) continue
     lines.push(hunkHeader(group.rows, first, group.context))
-    for (const row of group.rows) lines.push(row.text)
+    for (const row of group.rows) lines.push(cutLeft(row, column))
   }
   return lines.join('\n')
 }
 
 /** Groups the rows of the window: each file's diff rows become one block, so one `Code`. */
-export function toBlocks(shown: Row[]): Block[] {
+export function toBlocks(shown: Row[], column = 0): Block[] {
   const blocks: Block[] = []
   let run: Row[] = []
   const flush = () => {
     const [first] = run
-    if (first !== undefined) blocks.push({ type: 'diff', path: first.path ?? '', source: diffSource(run) })
+    if (first !== undefined) blocks.push({ type: 'diff', path: first.path ?? '', source: diffSource(run, column) })
     run = []
   }
   for (const row of shown) {

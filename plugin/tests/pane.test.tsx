@@ -172,6 +172,21 @@ test('should draw Approve and Reject above the first diff rows when the pane ope
   await ui.unmount()
 })
 
+test('should shift the diff to the left when the right button is pressed', async ($, on) => {
+  const wide = LONG_PATCH.replace('+LINE_0 = 0', '+' + 'abcdefghij'.repeat(8))
+  await reviewInPane($, on, { isPlaced: true, surfaces: ['terminal'], patch: wide })
+  const ui = await $.ui.mount({ ...SHORT_PANE, surface: 'terminal' })
+  expect(JSON.stringify(await ui.drawn())).toContain('+abcdefghij')
+
+  await ui.press({ key: 'right' })
+
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('+abcdefghijabcdefghij')
+  expect(drawn).not.toContain('+abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij')
+  expect(drawn).toContain('column 21')
+  await ui.unmount()
+})
+
 test('should draw only as many diff rows as fit under the header', async ($, on) => {
   await reviewInPane($, on, { isPlaced: true, surfaces: ['terminal'], patch: LONG_PATCH })
   const ui = await $.ui.mount({ ...SHORT_PANE, surface: 'terminal' })

@@ -4,9 +4,9 @@ import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 import type { GateState, PaneDecision, Review, ReviewSection, ReviewStage } from '../types'
 import { TERRY_ALERT, TERRY_CALM } from './art'
 import { fitFiles, splitPatch } from './patch'
-import { buildRows, toBlocks } from './rows'
+import { buildRows, lastColumn, toBlocks } from './rows'
 import type { Row } from './rows'
-import { lastOffset, nextOffset } from './scroll'
+import { lastOffset, nextColumn, nextOffset } from './scroll'
 
 const PANE = 'terry-diff'
 const PANE_TITLE = 'Diff review'
@@ -39,6 +39,8 @@ const BAND_MIN_TEXT_COLUMNS = 30
 // waits for an answer; the status line and a blank row once the user answered; none otherwise.
 const HEADER_ROWS_PENDING = 3
 const HEADER_ROWS_ANSWERED = 2
+// Columns one press of the left or right button moves the diff sideways.
+const SIDEWAYS_STEP = 20
 // Columns the pane's text starts in and the width assumed before the first drawing.
 const DEFAULT_PANE_COLUMNS = 80
 // A snowy owl's blue-white; the alert pose takes the theme's warning colour instead.
@@ -57,6 +59,7 @@ const review = atom({ plugin: 'terry', key: 'review' } as const, null)
 const promptReviewFor = atom({ plugin: 'terry', key: 'promptReviewFor' } as const, null)
 const gate = atom({ plugin: 'terry', key: 'gate' } as const, 'unknown')
 const diffRow = atom({ plugin: 'terry', key: 'diffRow' } as const, 0)
+const diffColumn = atom({ plugin: 'terry', key: 'diffColumn' } as const, 0)
 
 async function diffsDir($: EngineInterface): Promise<string | null> {
   const home = await $.env.get('HOME')
@@ -150,6 +153,7 @@ async function showReview($: EngineInterface, toolUseId: string, onlyStage?: Rev
   if (loaded.stage === 'prompt' && isApprovedInPane(await read($, review), loaded.reviewKey)) return
   await update($, review, () => loaded)
   await update($, diffRow, () => 0)
+  await update($, diffColumn, () => 0)
   // In the pane stage no dialog is up, so the pane may take the keys for its a/r hotkeys.
   const opened = await $.ui.open({
     id: PANE,
@@ -195,6 +199,12 @@ async function approve($: EngineInterface, current: Review): Promise<void> {
 async function reject($: EngineInterface, current: Review): Promise<void> {
   await recordDecision($, current, 'rejected')
   await $.prompt.fill({ text: `terry: I rejected the diff for: ${current.command}\nReason: ` })
+}
+
+/** The left and right buttons: moves the diff `direction` times `SIDEWAYS_STEP` columns. */
+async function moveSideways($: EngineInterface, current: Review, direction: -1 | 1): Promise<void> {
+  const last = lastColumn(buildRows(current, DEFAULT_PANE_COLUMNS))
+  await update($, diffColumn, place => nextColumn(place, direction, SIDEWAYS_STEP, last))
 }
 
 async function readGateState($: EngineInterface): Promise<GateState> {
@@ -348,6 +358,7 @@ export const register: Register = (on, options) => {
     const windowRows = windowRowsOf(current, e.props.scroll.bodyRows)
     const first = Math.min(await read($, diffRow), lastOffset(rows.length, windowRows))
     const shown = rows.slice(first, first + windowRows)
+    const column = Math.min(await read($, diffColumn), lastColumn(rows))
     const isPending = current.stage === 'pane' && current.decision === 'pending'
 
     return (
@@ -365,8 +376,19 @@ export const register: Register = (on, options) => {
                 </Button>
               </Box>
               <Box marginLeft={2}>
+                <Button key="left" hotkey="h" onPress={() => void moveSideways($, current, -1)}>
+                  ◀
+                </Button>
+              </Box>
+              <Box marginLeft={1}>
+                <Button key="right" hotkey="l" onPress={() => void moveSideways($, current, 1)}>
+                  ▶
+                </Button>
+              </Box>
+              <Box marginLeft={2}>
                 <Text dimColor>
                   rows {first + 1}-{first + shown.length} of {rows.length}
+                  {column > 0 ? `, column ${column + 1}` : ''}
                 </Text>
               </Box>
             </Box>
@@ -385,7 +407,7 @@ export const register: Register = (on, options) => {
             <Box height={1} />
           </Box>
         )}
-        {toBlocks(shown).map(block =>
+        {toBlocks(shown, column).map(block =>
           block.type === 'diff' ? (
             <Code format="diff" path={block.path} source={block.source} wrap="truncate-end" />
           ) : (
