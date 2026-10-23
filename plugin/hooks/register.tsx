@@ -224,6 +224,13 @@ function scrollRowsFrom(options: PluginOptions): number {
   return typeof rows === 'number' && Number.isFinite(rows) && rows >= 1 ? Math.round(rows) : DEFAULT_SCROLL_ROWS
 }
 
+/** An added or removed line is padded to the pane's width, so its background is a full bar. */
+function drawnText(row: Row, columns: number): string {
+  if (row.text === '') return ' '
+  const isBar = row.kind === 'added' || row.kind === 'removed'
+  return isBar ? row.text.padEnd(columns) : row.text
+}
+
 function headerRows(current: Review): number {
   if (current.stage !== 'pane') return 0
   return current.decision === 'pending' ? HEADER_ROWS_PENDING : HEADER_ROWS_ANSWERED
@@ -234,7 +241,7 @@ function windowRowsOf(current: Review, bodyRows: number): number {
   return Math.max(1, bodyRows - headerRows(current))
 }
 
-type RowStyle = { bold?: boolean; color?: string; dimColor?: boolean }
+type RowStyle = { bold?: boolean; color?: string; backgroundColor?: string; dimColor?: boolean }
 
 const ROW_STYLES: Record<Row['kind'], RowStyle> = {
   blank: {},
@@ -246,9 +253,9 @@ const ROW_STYLES: Record<Row['kind'], RowStyle> = {
   'lint-info': { dimColor: true },
   file: { bold: true, color: 'warning' },
   binary: { dimColor: true },
-  added: { color: 'success' },
-  removed: { color: 'error' },
-  hunk: { dimColor: true },
+  added: { backgroundColor: 'diffAdded' },
+  removed: { backgroundColor: 'diffRemoved' },
+  hunk: { color: 'suggestion' },
   context: {},
   omitted: { color: 'warning' },
 }
@@ -386,7 +393,7 @@ export const register: Register = (on, options) => {
         )}
         {shown.map(row => (
           <Text {...ROW_STYLES[row.kind]} wrap="truncate-end">
-            {row.text === '' ? ' ' : row.text}
+            {drawnText(row, paneColumns)}
           </Text>
         ))}
         {/* One row more than the window shows: the engine then has something to scroll, so its
