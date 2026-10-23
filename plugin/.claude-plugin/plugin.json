@@ -1,0 +1,16 @@
+{
+  "name": "terry",
+  "version": "0.1.0",
+  "description": "A scrollable full-diff pane beside the chat whenever the terry gate asks you to approve a commit, push or PR",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "scrollRows": {
+      "type": "number",
+      "title": "Diff pane scroll speed",
+      "description": "Rows the Diff review pane moves for each mouse wheel tick",
+      "default": 3,
+      "min": 1,
+      "max": 50
+    }
+  }
+}

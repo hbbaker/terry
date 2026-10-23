@@ -1,0 +1,35 @@
+# terry: delta as git's pager, with strong add/remove colours.
+# install.sh adds this file to ~/.gitconfig with `git config --global --add include.path`.
+# Values set directly in ~/.gitconfig after the include line win over these.
+
+[core]
+	pager = delta
+
+[interactive]
+	diffFilter = delta --color-only
+
+[merge]
+	conflictstyle = zdiff3
+
+[delta]
+	navigate = true
+	side-by-side = true
+	line-numbers = true
+	syntax-theme = Catppuccin Mocha
+	keep-plus-minus-markers = true
+	plus-style = syntax "#1e3a2a"
+	plus-emph-style = syntax bold "#2f7a4d"
+	minus-style = syntax "#3f1d26"
+	minus-emph-style = syntax bold "#8c2f42"
+	line-numbers-plus-style = bold "#a6e3a1"
+	line-numbers-minus-style = bold "#f38ba8"
+	line-numbers-zero-style = "#6c7086"
+	line-numbers-left-style = "#6c7086"
+	line-numbers-right-style = "#6c7086"
+	file-style = bold "#f9e2af"
+	file-decoration-style = "#f9e2af" ul
+	hunk-header-style = file line-number syntax
+	hunk-header-decoration-style = "#89b4fa" box
+	hunk-header-file-style = "#89b4fa"
+	hunk-header-line-number-style = bold "#fab387"
+	whitespace-error-style = reverse "#f38ba8"

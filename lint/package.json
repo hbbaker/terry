@@ -1,0 +1,12 @@
+{
+  "name": "claude-diff-gate-lint",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.0"
+  }
+}
