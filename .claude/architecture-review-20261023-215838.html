@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Architecture review — terry</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+    </script>
+    <style>
+      .seam { border-style: dashed; }
+      .deep { background: linear-gradient(135deg, #0f172a, #1e293b); }
+      .label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; }
+      .faded { opacity: 0.45; }
+    </style>
+  </head>
+  <body class="bg-stone-50 text-slate-900 font-sans">
+    <main class="max-w-5xl mx-auto px-6 py-12 space-y-12">
+      <header class="space-y-3">
+        <h1 class="font-serif text-4xl">terry <span class="text-slate-400">· architecture review</span></h1>
+        <p class="text-sm text-slate-500">2026-10-23 · main @ aaf1027 · hot spots: <span class="font-mono">plugin/hooks/register.tsx</span>, <span class="font-mono">shell.rs</span>, <span class="font-mono">diff.rs</span>, <span class="font-mono">install.rs</span>, <span class="font-mono">git.rs</span></p>
+        <div class="flex flex-wrap gap-4 text-xs text-slate-600">
+          <span class="flex items-center gap-2"><span class="inline-block w-6 h-4 border border-slate-400 bg-white"></span>module</span>
+          <span class="flex items-center gap-2"><span class="inline-block w-6 h-0 border-t-2 border-dashed border-slate-500"></span>seam</span>
+          <span class="flex items-center gap-2"><span class="inline-block w-6 h-0 border-t-2 border-red-600"></span>leakage</span>
+          <span class="flex items-center gap-2"><span class="inline-block w-6 h-4 deep rounded-sm"></span>deep module</span>
+        </div>
+      </header>
+
+      <section id="candidates" class="space-y-10">
+
+        <!-- A -->
+        <article id="a" class="rounded-xl border border-slate-200 bg-white p-6 space-y-5">
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 class="font-serif text-2xl mr-2">A · Deepen the Diff pane module</h2>
+            <span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-medium">Strong</span>
+            <span class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-xs">in-process</span>
+          </div>
+          <p class="font-mono text-sm text-slate-600">plugin/hooks/register.tsx · rows.ts · scroll.ts · patch.ts · tests/pane.test.tsx</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 p-4">
+              <div class="label text-slate-500 mb-2">Before</div>
+              <pre class="mermaid">
+flowchart TB
+  R["ui.render hook"] -->|"writes"| P["paneColumns (closure variable)"]
+  S["ui.scroll hook"] -->|"reads"| P
+  R --> H["JSX header: 3 rows"]
+  S --> K["HEADER_ROWS_PENDING = 3"]
+  K -.must agree.- H
+  R --> Q["diffRow / diffColumn atoms"]
+  S --> Q
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class P,K leak
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 p-4 flex flex-col">
+              <div class="label text-slate-500 mb-2">After</div>
+              <div class="flex-1 flex items-center justify-center">
+                <div class="deep text-white rounded-lg p-5 w-full max-w-xs space-y-3">
+                  <div class="label text-slate-300">Diff pane</div>
+                  <div class="text-sm font-mono">draw(review, props, place)</div>
+                  <div class="text-sm font-mono">scroll(place, move)</div>
+                  <div class="faded text-xs border-t border-slate-600 pt-2">header height · window rows · columns · row blocks · hunk headers</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <p><b>Problem.</b> The pane keeps its window state in a closure variable written by one hook and read by another, and the header height lives twice (a constant and the JSX).</p>
+          <p><b>Solution.</b> One Diff pane module owns the window place, the header and the scroll math behind a two-call interface.</p>
+          <ul class="list-disc ml-6 text-sm space-y-1">
+            <li>locality: header height lives in one place</li>
+            <li>The scroll hook becomes testable without the engine</li>
+            <li>leverage: render and scroll share one interface</li>
+            <li>Hidden temporal coupling disappears</li>
+          </ul>
+        </article>
+
+        <!-- B -->
+        <article id="b" class="rounded-xl border border-slate-200 bg-white p-6 space-y-5">
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 class="font-serif text-2xl mr-2">B · Split the review report from its two renderers</h2>
+            <span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-medium">Strong</span>
+            <span class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-xs">ports &amp; adapters</span>
+          </div>
+          <p class="font-mono text-sm text-slate-600">src/prompt.rs · src/manifest.rs · src/review.rs · src/text.rs</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 p-4">
+              <div class="label text-slate-500 mb-2">Before</div>
+              <pre class="mermaid">
+flowchart LR
+  RV["review.rs"] --> PR["prompt.rs paints ANSI text"]
+  PR --> PRM["permission prompt"]
+  PR -->|"colored strings"| MF["manifest.rs"]
+  MF -->|"strip_ansi undoes the paint"| JS["pane JSON"]
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class MF leak
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 p-4">
+              <div class="label text-slate-500 mb-2">After</div>
+              <pre class="mermaid">
+flowchart LR
+  RV["review.rs"] --> RR["Review report: plain data"]
+  RR -.seam.-> A1["ANSI prompt adapter"]
+  RR -.seam.-> A2["JSON manifest adapter"]
+  A1 --> PRM["permission prompt"]
+  A2 --> JS["pane JSON"]
+  classDef deep fill:#0f172a,color:#fff;
+  class RR deep
+              </pre>
+            </div>
+          </div>
+
+          <p><b>Problem.</b> The manifest builds its text from the prompt's colored strings, then strips the colors (<span class="font-mono">strip_ansi</span>) to undo them.</p>
+          <p><b>Solution.</b> Build one plain Review report once, and let the prompt and the manifest each render it.</p>
+          <ul class="list-disc ml-6 text-sm space-y-1">
+            <li>Two adapters justify the seam</li>
+            <li>strip_ansi leaves the manifest</li>
+            <li>locality: lint wording changes in one place</li>
+            <li>Report tests need no color switch</li>
+          </ul>
+        </article>
+
+        <!-- C -->
+        <article id="c" class="rounded-xl border border-slate-200 bg-white p-6 space-y-5">
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 class="font-serif text-2xl mr-2">C · Pull the gate decision out of <span class="font-mono text-xl">answer()</span></h2>
+            <span class="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs font-medium">Worth exploring</span>
+            <span class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-xs">local-substitutable</span>
+          </div>
+          <p class="font-mono text-sm text-slate-600">src/gate_bash.rs · src/approvals.rs · src/lint_fix.rs · src/manifest.rs · src/hook.rs · tests/gate.rs</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 p-4">
+              <div class="label text-slate-500 mb-2">Before: one function, nine bands</div>
+              <div class="space-y-1 text-xs font-mono">
+                <div class="h-7 border-l-4 border-slate-400 bg-slate-50 pl-2 flex items-center">read call from stdin</div>
+                <div class="h-7 border-l-4 border-slate-400 bg-slate-50 pl-2 flex items-center">deny approvals / config names</div>
+                <div class="h-7 border-l-4 border-slate-400 bg-slate-50 pl-2 flex items-center">find and filter actions</div>
+                <div class="h-7 border-l-4 border-slate-400 bg-slate-50 pl-2 flex items-center">review + lint</div>
+                <div class="h-7 border-l-4 border-red-500 bg-red-50 pl-2 flex items-center">set / clear lint-fix marks (effect)</div>
+                <div class="h-7 border-l-4 border-slate-400 bg-slate-50 pl-2 flex items-center">review key</div>
+                <div class="h-7 border-l-4 border-red-500 bg-red-50 pl-2 flex items-center">take approval (effect)</div>
+                <div class="h-7 border-l-4 border-red-500 bg-red-50 pl-2 flex items-center">write manifest by stage (effect)</div>
+                <div class="h-7 border-l-4 border-slate-400 bg-slate-50 pl-2 flex items-center">print decision</div>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 p-4 flex flex-col">
+              <div class="label text-slate-500 mb-2">After</div>
+              <div class="flex-1 flex flex-col gap-3 justify-center">
+                <div class="deep text-white rounded-lg p-4 text-sm space-y-1">
+                  <div class="label text-slate-300">Gate decision</div>
+                  <div class="font-mono">decide(call, stores) → Verdict</div>
+                  <div class="faded text-xs">stage machine · lint denial · key · fallbacks</div>
+                </div>
+                <div class="seam border-2 border-slate-400 rounded-lg p-3 text-xs font-mono text-slate-600">stores: approvals · lint-fix marks · manifests</div>
+              </div>
+            </div>
+          </div>
+
+          <p><b>Problem.</b> The stage machine (pane, prompt, prompt-only) and three side effects share one function, so every test spawns the binary and a git sandbox.</p>
+          <p><b>Solution.</b> A Gate decision module takes the call and the stores, and returns a Verdict that the hook prints.</p>
+          <ul class="list-disc ml-6 text-sm space-y-1">
+            <li>Stage rules tested without a process</li>
+            <li>locality: fail-closed rules in one module</li>
+            <li>Effects move behind one seam</li>
+            <li>tests/gate.rs keeps end-to-end checks</li>
+          </ul>
+        </article>
+
+        <!-- D -->
+        <article id="d" class="rounded-xl border border-slate-200 bg-white p-6 space-y-5">
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 class="font-serif text-2xl mr-2">D · One Commit contents module</h2>
+            <span class="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs font-medium">Worth exploring</span>
+            <span class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-xs">local-substitutable</span>
+          </div>
+          <p class="font-mono text-sm text-slate-600">src/shell.rs · src/staging.rs · src/diff.rs · src/git.rs</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 p-4">
+              <div class="label text-slate-500 mb-2">Before</div>
+              <pre class="mermaid">
+flowchart LR
+  SH["shell.rs: GitStep list"] --> ST["staging.rs: sort_preceding, commit_paths"]
+  ST -->|"IndexOp, IndexBase"| DF["diff.rs: build_commit, 5 branches"]
+  DF --> GT["git.rs: temp index replay"]
+  GT -.IndexOp type lives here.-> ST
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class ST,GT leak
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 p-4 flex flex-col">
+              <div class="label text-slate-500 mb-2">After</div>
+              <div class="flex-1 flex items-center justify-center">
+                <div class="deep text-white rounded-lg p-5 w-full max-w-xs space-y-3">
+                  <div class="label text-slate-300">Commit contents</div>
+                  <div class="text-sm font-mono">of(repo, args, earlier_steps)</div>
+                  <div class="text-sm font-mono">→ patch + notes</div>
+                  <div class="faded text-xs border-t border-slate-600 pt-2">step sorting · paths · temp index · warnings</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <p><b>Problem.</b> Answering "what will this commit hold" crosses four modules, and the replay types leak from <span class="font-mono">git.rs</span> into two callers.</p>
+          <p><b>Solution.</b> Move step sorting, path rules and the temp-index replay behind one Commit contents interface.</p>
+          <ul class="list-disc ml-6 text-sm space-y-1">
+            <li>locality: staging bugs concentrate in one module</li>
+            <li>IndexOp stops leaking</li>
+            <li>diff.rs sheds five branches</li>
+            <li>Tests cross one interface</li>
+          </ul>
+        </article>
+
+        <!-- E -->
+        <article id="e" class="rounded-xl border border-slate-200 bg-white p-6 space-y-5">
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 class="font-serif text-2xl mr-2">E · Give the Rust gate and the TypeScript pane one contract test</h2>
+            <span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-medium">Strong</span>
+            <span class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-xs">ports &amp; adapters</span>
+          </div>
+          <p class="font-mono text-sm text-slate-600">src/manifest.rs · src/approvals.rs · plugin/hooks/register.tsx · plugin/types/index.d.ts</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 p-4">
+              <div class="label text-slate-500 mb-2">Before</div>
+              <div class="flex items-center justify-between gap-3">
+                <div class="border border-slate-400 rounded p-3 text-xs font-mono w-5/12">manifest.rs<br />MANIFEST_VERSION = 2<br />approval path + via</div>
+                <svg width="70" height="40" viewBox="0 0 70 40"><line x1="2" y1="20" x2="68" y2="20" stroke="#dc2626" stroke-width="2" stroke-dasharray="4 4" /><text x="8" y="14" font-size="9" fill="#dc2626">no shared test</text></svg>
+                <div class="border border-slate-400 rounded p-3 text-xs font-mono w-5/12">register.tsx<br />MANIFEST_VERSION = 2<br />CallManifest type</div>
+              </div>
+              <p class="text-xs text-slate-500 mt-3">Each side copies the format. A mismatch leaves the gate holding a command the pane cannot show.</p>
+            </div>
+            <div class="rounded-lg border border-slate-200 p-4">
+              <div class="label text-slate-500 mb-2">After</div>
+              <div class="flex items-center justify-between gap-3">
+                <div class="border border-slate-400 rounded p-3 text-xs font-mono w-4/12">Rust writer test</div>
+                <div class="deep text-white rounded p-3 text-xs font-mono w-4/12 text-center">fixture:<br />call manifest v2<br />approval</div>
+                <div class="border border-slate-400 rounded p-3 text-xs font-mono w-4/12 text-right">TS reader test</div>
+              </div>
+              <p class="text-xs text-slate-500 mt-3">One checked-in fixture. Both tests read or write exactly it.</p>
+            </div>
+          </div>
+
+          <p><b>Problem.</b> The manifest and approval formats live in two languages with no test that crosses the seam.</p>
+          <p><b>Solution.</b> A shared fixture file that the Rust writer test produces and the plugin reader test consumes.</p>
+          <ul class="list-disc ml-6 text-sm space-y-1">
+            <li>Two adapters justify the seam</li>
+            <li>locality: format knowledge in one fixture</li>
+            <li>Version bumps fail a test, not the user</li>
+            <li>No production code changes</li>
+          </ul>
+        </article>
+
+        <!-- F -->
+        <article id="f" class="rounded-xl border border-slate-200 bg-white p-6 space-y-5">
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 class="font-serif text-2xl mr-2">F · Tests reach past the library interface</h2>
+            <span class="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs font-medium">Worth exploring</span>
+            <span class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-xs">in-process</span>
+          </div>
+          <p class="font-mono text-sm text-slate-600">src/lib.rs · tests/diff.rs · tests/shell.rs · tests/install.rs · tests/lint.rs · tests/patch.rs · tests/stamp.rs</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 p-4">
+              <div class="label text-slate-500 mb-2">Before: interface as wide as the implementation</div>
+              <div class="space-y-2">
+                <div class="flex gap-2 items-end h-28">
+                  <div class="w-1/2 bg-amber-300 h-24 rounded-sm flex items-end justify-center text-xs pb-1">interface: ~13 helpers made pub</div>
+                  <div class="w-1/2 bg-slate-300 h-28 rounded-sm flex items-end justify-center text-xs pb-1">implementation</div>
+                </div>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 p-4">
+              <div class="label text-slate-500 mb-2">After: interface is the test surface</div>
+              <div class="flex gap-2 items-end h-28">
+                <div class="w-1/2 bg-emerald-300 h-8 rounded-sm flex items-end justify-center text-xs pb-1">find_gated_actions · build · lint_patch</div>
+                <div class="w-1/2 bg-slate-300 h-28 rounded-sm flex items-end justify-center text-xs pb-1">implementation</div>
+              </div>
+            </div>
+          </div>
+
+          <p><b>Problem.</b> Moving tests out of <span class="font-mono">src/</span> made helpers like <span class="font-mono">flag_value</span>, <span class="font-mono">hunk_starts</span> and <span class="font-mono">is_api_write</span> public, so the library interface now includes internals.</p>
+          <p><b>Solution.</b> Test those behaviors through the real interface and make the helpers private again.</p>
+          <ul class="list-disc ml-6 text-sm space-y-1">
+            <li>Interface shrinks; implementation keeps freedom</li>
+            <li>Refactors stop breaking tests</li>
+            <li>The interface is the test surface</li>
+          </ul>
+        </article>
+
+        <!-- G -->
+        <article id="g" class="rounded-xl border border-slate-200 bg-white p-6 space-y-5">
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 class="font-serif text-2xl mr-2">G · One state store for the four folders under <span class="font-mono text-xl">~/.claude/diffs</span></h2>
+            <span class="px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 text-xs font-medium">Speculative</span>
+            <span class="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-xs">local-substitutable</span>
+          </div>
+          <p class="font-mono text-sm text-slate-600">src/approvals.rs · src/lint_fix.rs · src/manifest.rs · src/review.rs · src/paths.rs</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 p-4">
+              <div class="label text-slate-500 mb-2">Before</div>
+              <pre class="mermaid">
+flowchart TB
+  A["approvals.rs: dir, 30 min life"] --> D["paths::diffs_dir"]
+  L["lint_fix.rs: dir, 24 h mark"] --> D
+  M["manifest.rs: dir, 24 h cleanup"] --> D
+  R["review.rs: patches, 14 d cleanup"] --> D
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 p-4 flex flex-col">
+              <div class="label text-slate-500 mb-2">After</div>
+              <div class="flex-1 flex items-center justify-center">
+                <div class="deep text-white rounded-lg p-5 w-full max-w-xs space-y-2">
+                  <div class="label text-slate-300">State store</div>
+                  <div class="text-sm font-mono">put · take · expire</div>
+                  <div class="faded text-xs border-t border-slate-600 pt-2">folders · lifetimes · cleanup</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <p><b>Problem.</b> Four modules each own a folder, a lifetime and a cleanup rule under the same root.</p>
+          <p><b>Solution.</b> A State store module owns folders and lifetimes; the four modules name a kind.</p>
+          <ul class="list-disc ml-6 text-sm space-y-1">
+            <li>locality: lifetimes in one table</li>
+            <li>One adapter today: the seam stays hypothetical</li>
+            <li>Tests already use a throwaway HOME</li>
+          </ul>
+          <div class="rounded-md border border-amber-300 bg-amber-50 text-amber-900 text-sm px-3 py-2">Only one adapter exists (the file system), so this seam is hypothetical. Revisit if a second store appears.</div>
+        </article>
+      </section>
+
+      <section id="top-recommendation">
+        <div class="rounded-xl border-2 border-emerald-500 bg-white p-8 space-y-3">
+          <div class="label text-emerald-700">Top recommendation</div>
+          <h2 class="font-serif text-3xl">A · Deepen the Diff pane module</h2>
+          <p>Most recent churn lives in <span class="font-mono">register.tsx</span> (7 commits), and this session's sticky-button and scroll bugs came from the coupling this candidate removes. <a class="text-emerald-700 underline" href="#a">See candidate A</a>.</p>
+          <p class="text-sm text-slate-500">Next: B (a clean seam with two real adapters), then E (cheap, no production change).</p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
