@@ -46,7 +46,7 @@ pub fn take_approval(key: &str) -> Option<ApprovalVia> {
 }
 
 /// Reads the approval's route; anything unclear gets the full review in the prompt.
-fn approval_via(content: &str) -> ApprovalVia {
+pub fn approval_via(content: &str) -> ApprovalVia {
     let via = serde_json::from_str::<Value>(content)
         .ok()
         .and_then(|approval| approval["via"].as_str().map(str::to_owned));
@@ -68,24 +68,4 @@ pub fn names_approvals(text: &str) -> bool {
 
 pub fn is_approvals_path(path: &Path) -> bool {
     paths::is_within(&paths::resolve(path), &paths::resolve(&approvals_dir()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn should_read_pane_only_when_the_approval_says_so() {
-        assert_eq!(approval_via(r#"{"via": "pane"}"#), ApprovalVia::Pane);
-        assert_eq!(approval_via(r#"{"via": "prompt"}"#), ApprovalVia::Prompt);
-        assert_eq!(approval_via("{}"), ApprovalVia::Prompt);
-        assert_eq!(approval_via("not json"), ApprovalVia::Prompt);
-    }
-
-    #[test]
-    fn should_spot_the_approvals_folder_in_a_command() {
-        assert!(names_approvals("echo x > ~/.claude/diffs/approvals/a.json"));
-        assert!(names_approvals("ls ~/.claude/diffs//approvals"));
-        assert!(!names_approvals("ls ~/.claude/diffs/calls"));
-    }
 }

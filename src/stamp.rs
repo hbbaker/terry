@@ -17,7 +17,7 @@ pub fn utc_stamp() -> String {
     stamp_of(unix_seconds() as u64)
 }
 
-fn stamp_of(seconds: u64) -> String {
+pub fn stamp_of(seconds: u64) -> String {
     let days = (seconds / SECONDS_PER_DAY) as i64;
     let in_day = seconds % SECONDS_PER_DAY;
     let (year, month, day) = civil_from_days(days);
@@ -47,26 +47,4 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     } as u32;
     let year = year_of_era + era * 400 + i64::from(month <= 2);
     (year, month, day)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::stamp_of;
-
-    #[test]
-    fn should_stamp_the_epoch_when_seconds_are_zero() {
-        assert_eq!(stamp_of(0), "19700101-000000");
-    }
-
-    #[test]
-    fn should_stamp_the_utc_date_and_time_when_seconds_are_given() {
-        // `date -u -d @1792778400 +%Y%m%d-%H%M%S`
-        assert_eq!(stamp_of(1_792_778_400), "20261023-180000");
-    }
-
-    #[test]
-    fn should_stamp_february_29_when_the_year_is_a_leap_year() {
-        // `date -u -d @1709208000 +%Y%m%d-%H%M%S`
-        assert_eq!(stamp_of(1_709_208_000), "20240229-120000");
-    }
 }

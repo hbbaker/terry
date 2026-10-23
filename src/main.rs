@@ -4,29 +4,10 @@
 //! Bash call and each file edit. `terry install` sets them up on this machine, and
 //! `terry exclude` / `terry include` turn terry off and on for a folder.
 
-mod approvals;
-mod config;
-mod diff;
-mod gate_bash;
-mod gate_edit;
-mod git;
-mod hook;
-mod install;
-mod lint;
-mod lint_fix;
-mod manifest;
-mod patch;
-mod paths;
-mod process;
-mod prompt;
-mod review;
-mod sha256;
-mod shell;
-mod stamp;
-mod text;
-
 use std::env;
 use std::process::ExitCode;
+
+use terry::{config, gate_bash, gate_edit, install};
 
 const USAGE: &str = "usage:
   terry install [--yes] [--no-plugin] set terry up on this machine
