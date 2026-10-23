@@ -61,13 +61,6 @@ pub fn repo_root(repo: &Path) -> Result<PathBuf, String> {
     git(repo, &["rev-parse", "--show-toplevel"]).map(|root| PathBuf::from(root.trim()))
 }
 
-pub fn upstream_of(repo: &Path, reference: &str) -> Option<String> {
-    let upstream = format!("{reference}@{{upstream}}");
-    git(repo, &["rev-parse", "--abbrev-ref", &upstream])
-        .ok()
-        .map(|name| name.trim().to_owned())
-}
-
 pub fn default_base_ref(repo: &Path, remote: &str) -> Result<String, String> {
     let head = format!("refs/remotes/{remote}/HEAD");
     if let Ok(base) = git(repo, &["symbolic-ref", "--short", &head]) {

@@ -1,6 +1,6 @@
 # terry
 
-A review gate for Claude Code. When Claude tries to **commit, push, or open, edit or merge a
+A review gate for Claude Code. When Claude tries to **commit, or open, edit or merge a
 pull request**, terry stops the command and shows you the diff before anything runs.
 
 - **Diff review prompt.** The permission prompt shows the commits, a file summary, and a
@@ -40,7 +40,7 @@ things outside the checkout:
 | --- | --- |
 | Missing lint tools and delta | Installs each one only after you say yes (brew, uv, pipx, apt and so on, whichever this machine has). `--yes` installs all of them without asking. |
 | `~/.gitconfig` | Adds `include.path` for `git/delta.gitconfig`. |
-| `~/.claude/settings.json` | Adds two `PreToolUse` hooks that run the terry binary, and `ask` rules for commit, push and `gh pr`. A backup goes to `~/.claude/backups/` first. The file is written back with its keys in A–Z order. |
+| `~/.claude/settings.json` | Adds two `PreToolUse` hooks that run the terry binary, and `ask` rules for commit and `gh pr`. A backup goes to `~/.claude/backups/` first. The file is written back with its keys in A–Z order. |
 | `~/.local/bin/terry` | A link to the binary, so `terry exclude` works in any folder. |
 | Claude Code plugins | Installs the `terry` pane plugin, read straight from `plugin/` in this folder. |
 
@@ -131,7 +131,7 @@ A change in `/config` reloads the plugin at once. After you edit `settings.json`
   have opened it with `/terry`); in a narrower one, run `/terry`.
 - The pane draws up to about 90,000 characters of diff; past that, it lists how many files
   it left out and where the full patch is.
-- Lint reads the working copy. When that differs from what is being committed or pushed, the
+- Lint reads the working copy. When that differs from what is being committed, the
   prompt says so.
 
 ## Tests

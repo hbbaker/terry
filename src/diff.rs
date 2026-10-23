@@ -1,5 +1,5 @@
-//! Builds the diff each gated action would publish: staged changes for a commit, what the
-//! remote gains for a push, the PR's changes for gh.
+//! Builds the diff each gated action would publish: staged changes for a commit, the PR's
+//! changes for gh.
 
 use std::path::{Path, PathBuf};
 
@@ -10,10 +10,6 @@ use crate::patch::added_lines_by_file;
 use crate::shell::{ActionKind, GatedAction};
 
 const DEFAULT_REMOTE: &str = "origin";
-const PUSH_OPTIONS_WITH_VALUE: [&str; 5] =
-    ["-o", "--push-option", "--repo", "--receive-pack", "--exec"];
-const PUSH_FORCE_FLAGS: [&str; 4] = ["-f", "--force", "--force-with-lease", "--force-if-includes"];
-const PUSH_MULTI_REF_FLAGS: [&str; 3] = ["--all", "--mirror", "--tags"];
 const PR_VIEW_FIELDS: &str = "number,title,url,baseRefName,headRefName";
 
 /// The change an action would publish, and what the review should say about it.
@@ -33,7 +29,6 @@ pub struct DiffResult {
 pub fn build(action: &GatedAction) -> Option<Result<DiffResult, String>> {
     match action.kind {
         ActionKind::Commit => Some(build_commit(action)),
-        ActionKind::Push => Some(build_push(action)),
         ActionKind::PrCreate => Some(build_pr_create(action)),
         ActionKind::PrEdit | ActionKind::PrMerge => Some(build_existing_pr(action)),
         ActionKind::ApiWrite | ActionKind::Unparsed => None,
@@ -92,125 +87,6 @@ fn build_commit(action: &GatedAction) -> Result<DiffResult, String> {
         branch: git::current_branch(repo),
         notes,
         lintable: true,
-    })
-}
-
-fn build_push(action: &GatedAction) -> Result<DiffResult, String> {
-    let repo = &action.repo_dir;
-    let branch = git::current_branch(repo);
-    let mut positionals: Vec<&str> = Vec::new();
-    let mut skip_next = false;
-    for arg in &action.args {
-        if skip_next {
-            skip_next = false;
-        } else if PUSH_OPTIONS_WITH_VALUE.contains(&arg.as_str()) {
-            skip_next = true;
-        } else if !arg.starts_with('-') {
-            positionals.push(arg);
-        }
-    }
-
-    let mut notes =
-        vec!["Remote refs come from the last fetch; the remote may have moved since.".to_owned()];
-    let refspec = positionals.get(1).copied();
-    let forced = action
-        .args
-        .iter()
-        .any(|arg| PUSH_FORCE_FLAGS.iter().any(|flag| arg.starts_with(flag)))
-        || refspec.is_some_and(|spec| spec.starts_with('+'));
-    if forced {
-        notes.push("FORCE PUSH: this can overwrite commits on the remote.".to_owned());
-    }
-    if action
-        .args
-        .iter()
-        .any(|arg| PUSH_MULTI_REF_FLAGS.contains(&arg.as_str()))
-    {
-        notes.push("Pushes more than one ref; the diff shows the current branch only.".to_owned());
-    }
-
-    let upstream = git::upstream_of(repo, "HEAD").unwrap_or_default();
-    let (upstream_remote, upstream_branch) =
-        upstream.split_once('/').unwrap_or((upstream.as_str(), ""));
-    let remote = positionals
-        .first()
-        .copied()
-        .unwrap_or(if upstream_remote.is_empty() {
-            DEFAULT_REMOTE
-        } else {
-            upstream_remote
-        });
-
-    let (source, destination) = match refspec {
-        Some(spec) => {
-            let spec = spec.trim_start_matches('+');
-            let (source, destination) = spec.split_once(':').unwrap_or((spec, ""));
-            if source.is_empty() {
-                notes.push(format!("DELETES remote branch {remote}/{destination}."));
-                return Ok(DiffResult {
-                    title: format!("Delete {remote}/{destination}"),
-                    patch: String::new(),
-                    repo_root: git::repo_root(repo)?,
-                    branch,
-                    notes,
-                    lintable: false,
-                });
-            }
-            (
-                source,
-                if destination.is_empty() {
-                    source
-                } else {
-                    destination
-                },
-            )
-        }
-        None if !upstream.is_empty() && upstream_remote == remote => ("HEAD", upstream_branch),
-        None => ("HEAD", branch.as_str()),
-    };
-    let source_label = if source == "HEAD" {
-        branch.as_str()
-    } else {
-        source
-    };
-    let tracking_ref = format!("{remote}/{destination}");
-
-    let (patch, title) = if git::ref_exists(repo, &tracking_ref) {
-        let patch = git::diff(repo, &[&tracking_ref, source])?;
-        notes.push("Commits:".to_owned());
-        notes.extend(git::commit_list(
-            repo,
-            &format!("{tracking_ref}..{source}"),
-        )?);
-        (
-            patch,
-            format!("What {tracking_ref} gains from {source_label}"),
-        )
-    } else {
-        let base = git::default_base_ref(repo, remote)?;
-        let patch = git::diff(repo, &[&format!("{base}...{source}")])?;
-        notes.push("Commits:".to_owned());
-        notes.extend(git::commit_list(repo, &format!("{base}..{source}"))?);
-        (
-            patch,
-            format!("New branch {tracking_ref}, compared with {base}"),
-        )
-    };
-    let pushes_checkout = source == "HEAD" || source == branch;
-    if pushes_checkout {
-        notes.extend(unsynced_notes(repo, &patch, &["HEAD"])?);
-    } else {
-        notes.push(format!(
-            "Not linted: {source} is not the checked-out branch."
-        ));
-    }
-    Ok(DiffResult {
-        title,
-        patch,
-        repo_root: git::repo_root(repo)?,
-        branch: source_label.to_owned(),
-        notes,
-        lintable: pushes_checkout,
     })
 }
 

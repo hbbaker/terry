@@ -15,7 +15,6 @@ const GH_API_BODY_FLAGS: [&str; 5] = ["-f", "-F", "--field", "--raw-field", "--i
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
     Commit,
-    Push,
     PrCreate,
     PrEdit,
     PrMerge,
@@ -28,7 +27,6 @@ impl ActionKind {
     pub fn label(self) -> &'static str {
         match self {
             ActionKind::Commit => "git commit",
-            ActionKind::Push => "git push",
             ActionKind::PrCreate => "gh pr create",
             ActionKind::PrEdit => "gh pr edit",
             ActionKind::PrMerge => "gh pr merge",
@@ -41,7 +39,6 @@ impl ActionKind {
     pub fn slug(self) -> &'static str {
         match self {
             ActionKind::Commit => "commit",
-            ActionKind::Push => "push",
             ActionKind::PrCreate => "pr-create",
             ActionKind::PrEdit => "pr-edit",
             ActionKind::PrMerge => "pr-merge",
@@ -263,7 +260,6 @@ fn parse_git(args: &[String], cwd: &Path) -> Option<GatedAction> {
     let (subcommand, rest) = args.get(index..)?.split_first()?;
     let kind = match subcommand.as_str() {
         "commit" => ActionKind::Commit,
-        "push" => ActionKind::Push,
         _ => return None,
     };
     Some(GatedAction {
@@ -328,12 +324,12 @@ fn is_api_write(args: &[String]) -> bool {
 }
 
 /// The text check for a command that cannot be split into words (an unclosed quote):
-/// `git` then `push` or `commit` on one line, or `gh pr` or `gh api`.
+/// `git` then `commit` on one line, or `gh pr` or `gh api`.
 fn looks_gated(command: &str) -> bool {
     let git_write = command.lines().any(|line| {
-        word_matches(line, "git").first().is_some_and(|&(_, end)| {
-            has_word(&line[end..], "push") || has_word(&line[end..], "commit")
-        })
+        word_matches(line, "git")
+            .first()
+            .is_some_and(|&(_, end)| has_word(&line[end..], "commit"))
     });
     let gh_write = word_matches(command, "gh").iter().any(|&(_, end)| {
         let rest = &command[end..];
@@ -415,8 +411,8 @@ mod tests {
     #[test]
     fn should_drop_a_comment_that_starts_a_word() {
         assert_eq!(
-            words("git push # later\nls"),
-            vec!["git", "push", "\n", "ls"]
+            words("git commit # later\nls"),
+            vec!["git", "commit", "\n", "ls"]
         );
     }
 
@@ -431,8 +427,8 @@ mod tests {
     #[test]
     fn should_follow_cd_when_git_runs_after_it() {
         assert_eq!(
-            kinds("cd /no-such-terry/repo && git status && git push", "/"),
-            vec![(ActionKind::Push, PathBuf::from("/no-such-terry/repo"))]
+            kinds("cd /no-such-terry/repo && git status && git commit", "/"),
+            vec![(ActionKind::Commit, PathBuf::from("/no-such-terry/repo"))]
         );
     }
 
@@ -445,10 +441,10 @@ mod tests {
     }
 
     #[test]
-    fn should_find_the_push_when_it_runs_inside_bash_c() {
+    fn should_find_the_commit_when_it_runs_inside_bash_c() {
         assert_eq!(
-            kinds("bash -c 'git push origin main'", "/r")[0].0,
-            ActionKind::Push
+            kinds("bash -c 'git commit -m x'", "/r")[0].0,
+            ActionKind::Commit
         );
     }
 
@@ -467,7 +463,8 @@ mod tests {
             ActionKind::PrMerge
         );
         assert!(kinds("gh pr list", "/r").is_empty());
-        assert!(kinds("git log --grep 'git push'", "/r").is_empty());
+        assert!(kinds("git log --grep 'git commit'", "/r").is_empty());
+        assert!(kinds("git push origin main", "/r").is_empty());
     }
 
     #[test]

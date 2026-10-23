@@ -2,7 +2,7 @@
 name = "terry"
 version = "0.1.0"
 edition = "2024"
-description = "A review gate for Claude Code: stops commits, pushes and PR changes until you review the diff"
+description = "A review gate for Claude Code: stops commits and PR changes until you review the diff"
 publish = false
 
 [dependencies]

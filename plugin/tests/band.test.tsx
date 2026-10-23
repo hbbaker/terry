@@ -8,10 +8,10 @@ const MANIFEST_PATH = `${HOME}/.claude/diffs/calls/toolu_01.json`
 const PANE_MANIFEST = {
   version: 2,
   tool_use_id: 'toolu_01',
-  command: 'git push origin main',
+  command: 'git commit -m x',
   stage: 'pane',
   review_key: REVIEW_KEY,
-  sections: [{ title: 'git push: origin/main..main', notes: [], lint: [], patch_path: null }],
+  sections: [{ title: 'git commit: Staged changes', notes: [], lint: [], patch_path: null }],
 }
 
 const BAND = {
@@ -118,12 +118,12 @@ test('should show the held command when terry waits for a review in the pane', a
   })
   const { clock } = await startSession($, on, ON)
 
-  await $.tool.call({ tool: 'Bash', tool_use_id: 'toolu_01', command: 'git push origin main' })
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'toolu_01', command: 'git commit -m x' })
   await clock.advance(300)
 
   const band = await $.ui.mount(BAND)
   expect(await band.find({ type: 'Text', text: 'Terry holds a command for your review' })).toBeDefined()
-  expect(await band.find({ type: 'Text', text: '$ git push origin main' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: '$ git commit -m x' })).toBeDefined()
   expect(await band.find({ type: 'Text', text: /◉ ▾ ◉/ })).toBeDefined()
   await band.unmount()
 })
