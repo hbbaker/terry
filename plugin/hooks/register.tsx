@@ -35,7 +35,7 @@ const GATE_OFF_PREFIX = 'terry is off'
 // Columns between the art and the band's words, and the fewest the words need beside the art.
 const BAND_ART_GAP = 2
 const BAND_MIN_TEXT_COLUMNS = 30
-// Rows above the diff that do not scroll: the title, the buttons and a blank row while the gate
+// Rows above the diff that do not scroll: the title, the buttons and the key hints while the gate
 // waits for an answer; the status line and a blank row once the user answered; none otherwise.
 const HEADER_ROWS_PENDING = 3
 const HEADER_ROWS_ANSWERED = 2
@@ -154,7 +154,7 @@ async function showReview($: EngineInterface, toolUseId: string, onlyStage?: Rev
   await update($, review, () => loaded)
   await update($, diffRow, () => 0)
   await update($, diffColumn, () => 0)
-  // In the pane stage no dialog is up, so the pane may take the keys for its a/r hotkeys.
+  // In the pane stage no dialog is up, so the pane may take the keys for its hotkeys.
   const opened = await $.ui.open({
     id: PANE,
     title: PANE_TITLE,
@@ -367,21 +367,21 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column">
             <Text bold>Read the diff, then answer here. Claude waits for you.</Text>
             <Box flexDirection="row">
-              <Button key="approve" hotkey="a" variant="primary" onPress={() => void approve($, current)}>
+              <Button key="approve" hotkey="y" variant="primary" onPress={() => void approve($, current)}>
                 Approve
               </Button>
               <Box marginLeft={2}>
-                <Button key="reject" hotkey="r" onPress={() => void reject($, current)}>
+                <Button key="reject" hotkey="n" onPress={() => void reject($, current)}>
                   Reject
                 </Button>
               </Box>
               <Box marginLeft={2}>
-                <Button key="left" hotkey="h" onPress={() => void moveSideways($, current, -1)}>
+                <Button key="left" hotkey="a" onPress={() => void moveSideways($, current, -1)}>
                   ◀
                 </Button>
               </Box>
               <Box marginLeft={1}>
-                <Button key="right" hotkey="l" onPress={() => void moveSideways($, current, 1)}>
+                <Button key="right" hotkey="d" onPress={() => void moveSideways($, current, 1)}>
                   ▶
                 </Button>
               </Box>
@@ -392,7 +392,7 @@ export const register: Register = (on, options) => {
                 </Text>
               </Box>
             </Box>
-            <Box height={1} />
+            <Text dimColor>y approve · n reject · a and d scroll sideways</Text>
           </Box>
         )}
         {current.stage === 'pane' && current.decision === 'approved' && (
