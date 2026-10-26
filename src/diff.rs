@@ -5,12 +5,11 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::git::{self, IndexBase, IndexOp};
+use crate::git::{self, DEFAULT_REMOTE, IndexBase, IndexOp};
 use crate::patch::added_lines_by_file;
 use crate::shell::{ActionKind, GatedAction};
 use crate::staging;
 
-const DEFAULT_REMOTE: &str = "origin";
 const PR_VIEW_FIELDS: &str = "number,title,url,baseRefName,headRefName";
 
 /// The change an action would publish, and what the review should say about it.

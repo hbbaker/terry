@@ -14,6 +14,7 @@ use std::process::ExitCode;
 
 use serde_json::{Map, Value, json};
 
+use crate::git;
 use crate::paths;
 
 const EXCLUDE_KEY: &str = "exclude";
@@ -120,6 +121,24 @@ pub fn status(args: &[&str]) -> ExitCode {
         None => {
             println!("terry is on in {}", dir.display());
             ExitCode::SUCCESS
+        }
+    }
+}
+
+/// `terry branches [folder]`: the branch chain of the folder's repo, root first, one branch per
+/// line. It prints nothing for a detached HEAD or a folder that is not a repo. The pane plugin
+/// reads it for its band.
+pub fn branches(args: &[&str]) -> ExitCode {
+    match target_dir(args) {
+        Ok(dir) => {
+            for branch in git::branch_chain(&dir) {
+                println!("{branch}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("ERROR: {error}");
+            ExitCode::from(2)
         }
     }
 }

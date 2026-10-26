@@ -45,6 +45,10 @@ const SIDEWAYS_STEP = 20
 const DEFAULT_PANE_COLUMNS = 80
 // A snowy owl's blue-white; the alert pose takes the theme's warning colour instead.
 const CALM_COLOR = '#8FB8ED'
+// One colour per layer of the branch chain, from the default branch down. Hex, because a theme has
+// no name per layer; picked for a dark background.
+const LAYER_COLORS = ['#8FB8ED', '#9BD39B', '#F2C879', '#E49AD0', '#7FD6D6', '#F29E8E']
+const BRANCH_SEPARATOR = ' -> '
 
 type ManifestSection = { title: string; notes: string[]; lint: string[]; patch_path: string | null }
 type CallManifest = {
@@ -58,6 +62,7 @@ type CallManifest = {
 const review = atom({ plugin: 'terry', key: 'review' } as const, null)
 const promptReviewFor = atom({ plugin: 'terry', key: 'promptReviewFor' } as const, null)
 const gate = atom({ plugin: 'terry', key: 'gate' } as const, 'unknown')
+const branchChain = atom({ plugin: 'terry', key: 'branchChain' } as const, [])
 const diffRow = atom({ plugin: 'terry', key: 'diffRow' } as const, 0)
 const diffColumn = atom({ plugin: 'terry', key: 'diffColumn' } as const, 0)
 
@@ -152,6 +157,8 @@ async function showReview($: EngineInterface, toolUseId: string, onlyStage?: Rev
   // Approve closed the pane so the permission prompt for the rerun draws alone; keep it closed.
   if (loaded.stage === 'prompt' && isApprovedInPane(await read($, review), loaded.reviewKey)) return
   await update($, review, () => loaded)
+  // A checkout since the last poll must not leave an old chain beside this review.
+  await refreshBranchChain($)
   await update($, diffRow, () => 0)
   await update($, diffColumn, () => 0)
   // In the pane stage no dialog is up, so the pane may take the keys for its hotkeys.
@@ -219,9 +226,27 @@ async function readGateState($: EngineInterface): Promise<GateState> {
   }
 }
 
+/** The branch chain of the session's folder, by `terry branches`; empty when it cannot be read. */
+async function readBranchChain($: EngineInterface): Promise<string[]> {
+  try {
+    const { exitCode, stdout } = await $.process.run(['terry', 'branches'], { timeoutMs: GATE_STATUS_TIMEOUT_MS })
+    if (exitCode !== 0) return []
+    return stdout.split('\n').filter(branch => branch !== '')
+  } catch {
+    // `terry` is not on PATH, or it did not finish in time.
+    return []
+  }
+}
+
+async function refreshBranchChain($: EngineInterface): Promise<void> {
+  const chain = await readBranchChain($)
+  await update($, branchChain, () => chain)
+}
+
 async function refreshGate($: EngineInterface): Promise<void> {
   const state = await readGateState($)
   await update($, gate, () => state)
+  await refreshBranchChain($)
 }
 
 /** True while terry holds a command until the user answers in the pane. */
@@ -430,6 +455,22 @@ export const register: Register = (on, options) => {
     const { Box, Text } = $.ui.resolve(e)
     const current = await read($, review)
     const holding = isHolding(current)
+    const chain = await read($, branchChain)
+
+    // The branches from the default branch down, one colour per layer; the checked-out one is bold.
+    const branches =
+      chain.length === 0 ? null : (
+        <Box flexDirection="row">
+          {chain.map((branch, depth) => (
+            <Box flexDirection="row">
+              {depth > 0 && <Text dimColor>{BRANCH_SEPARATOR}</Text>}
+              <Text bold={depth === chain.length - 1} color={LAYER_COLORS[depth % LAYER_COLORS.length]} wrap="truncate-end">
+                {branch}
+              </Text>
+            </Box>
+          ))}
+        </Box>
+      )
 
     const words = holding ? (
       <Box flexDirection="column">
@@ -439,6 +480,7 @@ export const register: Register = (on, options) => {
         <Text dimColor wrap="truncate-end">
           $ {current.command}
         </Text>
+        {branches}
         <Text dimColor>Answer in the Diff review pane (/{COMMAND} opens it).</Text>
       </Box>
     ) : (
@@ -447,6 +489,7 @@ export const register: Register = (on, options) => {
           Terry is watching
         </Text>
         <Text dimColor>Commits and PRs wait for your review.</Text>
+        {branches}
       </Box>
     )
 
