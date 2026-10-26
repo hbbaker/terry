@@ -18,9 +18,16 @@ use crate::text::strip_ansi;
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
+const DIM: &str = "\x1b[2m";
 const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
 const YELLOW: &str = "\x1b[33m";
+const BLUE: &str = "\x1b[34m";
+const MAGENTA: &str = "\x1b[35m";
+const CYAN: &str = "\x1b[36m";
+/// One colour per layer of the branch chain, from the default branch down.
+const LAYER_COLORS: [&str; 6] = [BLUE, GREEN, YELLOW, MAGENTA, CYAN, RED];
+const BRANCH_SEPARATOR: &str = " -> ";
 const MAX_PREVIEW_LINES: usize = 120;
 const MAX_PREVIEW_LINE_CHARS: usize = 200;
 const MAX_DENIAL_PROBLEMS: usize = 50;
@@ -35,6 +42,29 @@ fn paint(text: &str, styles: &[&str]) -> String {
         return text.to_owned();
     }
     format!("{}{text}{RESET}", styles.concat())
+}
+
+/// The branch chain of `repo_dir` (`main -> dev -> subfeature`), one colour per layer and the
+/// checked-out branch in bold. None when HEAD names no branch.
+fn branch_line(repo_dir: &Path) -> Option<String> {
+    let chain = git::branch_chain(repo_dir);
+    let current = chain.len().checked_sub(1)?;
+    let layers: Vec<String> = chain
+        .iter()
+        .enumerate()
+        .map(|(depth, branch)| {
+            let color = LAYER_COLORS[depth % LAYER_COLORS.len()];
+            if depth == current {
+                paint(branch, &[BOLD, color])
+            } else {
+                paint(branch, &[color])
+            }
+        })
+        .collect();
+    Some(format!(
+        "branch: {}",
+        layers.join(&paint(BRANCH_SEPARATOR, &[DIM]))
+    ))
 }
 
 /// The permission prompt's text when it is the only review: every action, with its diff.
@@ -79,6 +109,7 @@ fn review_section(review: &ActionReview) -> String {
         &format!("== {}: {} ==", kind.label(), result.title),
         &[BOLD],
     )];
+    parts.extend(branch_line(&review.action.repo_dir));
     parts.extend(result.notes.iter().cloned());
     if let Some(lint) = &review.lint {
         parts.push(String::new());

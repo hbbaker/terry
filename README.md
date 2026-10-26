@@ -105,6 +105,10 @@ A change in `/config` reloads the plugin at once. After you edit `settings.json`
 
 - **Turn terry off in a folder:** run `terry exclude` there (or `terry exclude <folder>`) in
   your own terminal. It stays off in every folder under it. `terry include` turns it on again.
+- **See the branch chain:** the band above the prompt and the permission prompt show the
+  branches from the default branch down to the one checked out, such as `main -> dev ->
+  subfeature`, one colour per layer. Git stores no parent for a branch, so terry picks, at each
+  step, the nearest local branch behind the one above it. `terry branches` prints the chain.
 - **Read the full patch in a terminal:** `delta < <patch path>`. The prompt shows the path.
 - **Open the pane again:** `/terry`.
 - **Approve or reject with the keyboard:** the pane takes the keys when it opens (unless you
