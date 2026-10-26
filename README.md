@@ -136,6 +136,11 @@ A change in `/config` reloads the plugin at once. After you edit `settings.json`
   the index, so the diff shows what the commit will hold. `git commit <paths>` shows only
   those paths. For other changes before the commit (`stash`, `checkout` and the like), the
   prompt warns that the diff may not match.
+- terry reads the command line as a shell would. It finds a commit after `&&`, `;`, `|`, `if`,
+  `then`, `do` or `{`, behind wrappers such as `sudo -u x`, `timeout 30` or `xargs`, inside
+  `$(...)` or backticks, behind a backslash-newline, and when a heredoc message comes first.
+  When `git commit` appears in a place terry cannot read (for example `find -exec`), the
+  review shows an "unparsed command" and no diff.
 - Lint reads the working copy. When that differs from what is being committed, the
   prompt says so.
 
