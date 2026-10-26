@@ -490,6 +490,41 @@ fn should_color_preview_when_color_is_on() {
     assert!(reason.contains(ANSI_ESCAPE), "{reason}");
 }
 
+#[test]
+fn should_show_the_branch_chain_in_plain_text_when_color_is_off() {
+    let sandbox = Sandbox::new();
+    sandbox.git(&sandbox.repo, &["checkout", "--quiet", "-b", "dev"]);
+    sandbox.git(&sandbox.repo, &["checkout", "--quiet", "-b", "subfeature"]);
+    sandbox.stage_clean_change();
+
+    let reason = sandbox.reason_of(sandbox.run_hook("git commit -m \"v2\""));
+
+    assert!(
+        reason.contains("branch: main -> dev -> subfeature"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn should_color_each_branch_of_the_chain_differently_when_color_is_on() {
+    let mut sandbox = Sandbox::new();
+    sandbox.color = true;
+    sandbox.git(&sandbox.repo, &["checkout", "--quiet", "-b", "dev"]);
+    sandbox.git(&sandbox.repo, &["checkout", "--quiet", "-b", "subfeature"]);
+    sandbox.stage_clean_change();
+
+    let reason = sandbox.reason_of(sandbox.run_hook("git commit -m \"v2\""));
+
+    let line = reason
+        .lines()
+        .find(|line| line.contains("branch:"))
+        .expect("has a branch line");
+    for (branch, color) in [("main", "\x1b[34m"), ("dev", "\x1b[32m")] {
+        assert!(line.contains(&format!("{color}{branch}")), "{line:?}");
+    }
+    assert!(line.contains("\x1b[1m\x1b[33msubfeature"), "{line:?}");
+}
+
 // --- call manifest for the terry pane ----------------------------------------
 
 #[test]

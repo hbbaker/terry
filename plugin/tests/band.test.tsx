@@ -38,17 +38,30 @@ const ON: ProcessRunResult = {
 const OFF: ProcessRunResult = { ...ON, exitCode: 1, stdout: 'terry is off in /work because /work is excluded\n' }
 const KILLED: ProcessRunResult = { ...ON, exitCode: 1, stdout: '' }
 
+const NO_BRANCHES: ProcessRunResult = { ...ON, stdout: '' }
+
+/** What `terry branches` prints for a chain: one branch per line, root first. */
+function branchesOf(...chain: string[]): ProcessRunResult {
+  return { ...ON, stdout: chain.map(branch => `${branch}\n`).join('') }
+}
+
 type Session = { clock: ReturnType<typeof mock.clock>; setStatus: (next: ProcessRunResult | Error) => void }
 
-/** Starts the session with `terry status` answering `status`; `setStatus` changes later polls. */
+/**
+ * Starts the session with `terry status` answering `status` and `terry branches` answering
+ * `branches`; `setStatus` changes later polls.
+ */
 async function startSession(
-  ...[$, on, status]: [...Parameters<TestBody>, ProcessRunResult | Error]
+  ...[$, on, status, branches = NO_BRANCHES]: [...Parameters<TestBody>, ProcessRunResult | Error, (ProcessRunResult | Error)?]
 ): Promise<Session> {
   const clock = mock.clock(on)
   let answer = status
   on('command.register', () => ({ value: { command: 'terry' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('process.run', () => (answer instanceof Error ? { deny: answer.message } : { value: answer }))
+  on('process.run', (_, e) => {
+    const result = e.argv.includes('branches') ? branches : answer
+    return result instanceof Error ? { deny: result.message } : { value: result }
+  })
   // The engine's own band, drawn when the plugin passes: an empty box.
   on('ui.render', ($, e) => {
     const { Box } = $.ui.resolve(e)
@@ -65,6 +78,61 @@ test('should show terry watching when the gate is on for the folder', async ($, 
 
   expect(await band.find({ type: 'Text', text: 'Terry is watching' })).toBeDefined()
   expect(await band.find({ type: 'Text', text: /◠ ▾ ◠/ })).toBeDefined()
+  await band.unmount()
+})
+
+test('should show each branch of the chain in its own colour when the folder is in a repo', async ($, on) => {
+  await startSession($, on, ON, branchesOf('main', 'dev', 'subfeature'))
+
+  const band = await $.ui.mount(BAND)
+
+  const main = await band.find({ type: 'Text', text: 'main' })
+  const dev = await band.find({ type: 'Text', text: 'dev' })
+  const subfeature = await band.find({ type: 'Text', text: 'subfeature' })
+  expect(main?.props.color).toBeDefined()
+  expect(new Set([main?.props.color, dev?.props.color, subfeature?.props.color]).size).toBe(3)
+  expect(subfeature?.props.bold).toBe(true)
+  expect(main?.props.bold).toBeFalsy()
+  await band.unmount()
+})
+
+test('should show no branch row when terry branches prints nothing', async ($, on) => {
+  await startSession($, on, ON, NO_BRANCHES)
+
+  const band = await $.ui.mount(BAND)
+
+  expect(await band.find({ type: 'Text', text: ' -> ' })).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: 'Terry is watching' })).toBeDefined()
+  await band.unmount()
+})
+
+test('should keep the band when terry branches fails', async ($, on) => {
+  await startSession($, on, ON, new Error('spawn terry ENOENT'))
+
+  const band = await $.ui.mount(BAND)
+
+  expect(await band.find({ type: 'Text', text: 'Terry is watching' })).toBeDefined()
+  await band.unmount()
+})
+
+test('should show the branch chain under the held command when terry waits for a review', async ($, on) => {
+  const files: Record<string, string> = {}
+  on('env.get', () => ({ value: HOME }))
+  on('fs.exists', (_, e) => ({ value: e.path in files }))
+  on('fs.read', (_, e) => ({ value: files[e.path] ?? '' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('tool.call', () => {
+    files[MANIFEST_PATH] = JSON.stringify(PANE_MANIFEST)
+    return { result: {} }
+  })
+  const { clock } = await startSession($, on, ON, branchesOf('main', 'dev'))
+
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'toolu_01', command: 'git commit -m x' })
+  await clock.advance(300)
+
+  const band = await $.ui.mount(BAND)
+  expect(await band.find({ type: 'Text', text: 'Terry holds a command for your review' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: 'dev' })).toBeDefined()
   await band.unmount()
 })
 

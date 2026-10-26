@@ -19,6 +19,11 @@ const PLAIN_OUTPUT_ENV: [(&str, &str); 5] = [
     ("GH_PROMPT_DISABLED", "1"),
 ];
 const FALLBACK_DEFAULT_BRANCHES: [&str; 2] = ["main", "master"];
+pub const DEFAULT_REMOTE: &str = "origin";
+/// What `current_branch` gives when HEAD names no branch.
+const DETACHED: &str = "detached";
+const MAX_CHAIN_DEPTH: usize = 8;
+const MAX_CHAIN_CANDIDATES: usize = 30;
 
 /// Runs `args` in `cwd` and returns its stdout. An error names the command and gives its
 /// stderr.
@@ -164,7 +169,7 @@ pub fn ref_exists(repo: &Path, reference: &str) -> bool {
 pub fn current_branch(repo: &Path) -> String {
     git(repo, &["symbolic-ref", "--short", "HEAD"])
         .map(|branch| branch.trim().to_owned())
-        .unwrap_or_else(|_| "detached".to_owned())
+        .unwrap_or_else(|_| DETACHED.to_owned())
 }
 
 pub fn repo_root(repo: &Path) -> Result<PathBuf, String> {
@@ -181,6 +186,79 @@ pub fn default_base_ref(repo: &Path, remote: &str) -> Result<String, String> {
         .map(|branch| format!("{remote}/{branch}"))
         .find(|candidate| ref_exists(repo, candidate))
         .ok_or_else(|| format!("cannot find the default branch of remote '{remote}'"))
+}
+
+/// The branches from the default branch down to the checked-out one, such as
+/// `main`, `dev`, `subfeature`. Git stores no parent for a branch, so each step picks the local
+/// branch nearest behind the one above it: the ancestor with the fewest commits between them.
+/// When two ancestors tie (a new branch cut from `dev` still sits on `dev`'s commit), the
+/// default branch loses, then the name that sorts first wins. A detached HEAD, or a folder that
+/// is not a repo, gives an empty chain.
+pub fn branch_chain(repo: &Path) -> Vec<String> {
+    let current = current_branch(repo);
+    if current == DETACHED {
+        return Vec::new();
+    }
+    let trunk = default_branch(repo);
+    let mut chain = vec![current];
+    while chain.len() < MAX_CHAIN_DEPTH && trunk.as_ref() != chain.last() {
+        let Some(parent) = nearest_ancestor_branch(repo, &chain, trunk.as_deref()) else {
+            break;
+        };
+        chain.push(parent);
+    }
+    chain.reverse();
+    chain
+}
+
+/// The default branch, when a local branch of that name exists.
+fn default_branch(repo: &Path) -> Option<String> {
+    let from_remote = default_base_ref(repo, DEFAULT_REMOTE)
+        .ok()
+        .and_then(|base| {
+            base.strip_prefix(&format!("{DEFAULT_REMOTE}/"))
+                .map(str::to_owned)
+        });
+    from_remote
+        .into_iter()
+        .chain(
+            FALLBACK_DEFAULT_BRANCHES
+                .iter()
+                .map(|name| (*name).to_owned()),
+        )
+        .find(|name| ref_exists(repo, &format!("refs/heads/{name}")))
+}
+
+/// The local branch behind the last branch of `chain` that is not in `chain` yet.
+fn nearest_ancestor_branch(repo: &Path, chain: &[String], trunk: Option<&str>) -> Option<String> {
+    let tip = chain.last()?;
+    let merged = format!("--merged={tip}");
+    let listing = git(
+        repo,
+        &[
+            "for-each-ref",
+            &merged,
+            "--format=%(refname:short)",
+            "refs/heads",
+        ],
+    )
+    .ok()?;
+    listing
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && !chain.iter().any(|seen| seen == name))
+        .take(MAX_CHAIN_CANDIDATES)
+        .filter_map(|name| {
+            let range = format!("{name}..{tip}");
+            let distance: usize = git(repo, &["rev-list", "--count", &range])
+                .ok()?
+                .trim()
+                .parse()
+                .ok()?;
+            Some((distance, trunk == Some(name), name))
+        })
+        .min()
+        .map(|(_, _, name)| name.to_owned())
 }
 
 /// One line per commit in `range`, indented for the review text.
