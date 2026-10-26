@@ -1,13 +1,21 @@
 //! Reads a Bash command line the way the gate needs it: which git and gh actions it runs, and
 //! in which folder.
 
+use std::iter::Peekable;
 use std::path::{Path, PathBuf};
+use std::str::Chars;
 
 use crate::paths;
 use crate::text::{after_whitespace, has_word, is_word_char, starts_with_word, word_matches};
 
-const SEPARATOR_CHARS: &str = ";&|()\n";
-const WRAPPER_COMMANDS: [&str; 6] = ["sudo", "command", "env", "time", "nohup", "exec"];
+const SEPARATOR_CHARS: &str = ";&|()\n`";
+const WRAPPER_COMMANDS: [&str; 9] = [
+    "sudo", "command", "env", "time", "nohup", "exec", "timeout", "nice", "xargs",
+];
+/// Words that start a command without being one: `if x; then git commit; fi`, `{ git commit; }`.
+const SHELL_KEYWORDS: [&str; 10] = [
+    "if", "then", "else", "elif", "do", "while", "until", "{", "}", "!",
+];
 const SHELL_COMMANDS: [&str; 5] = ["bash", "sh", "zsh", "dash", "eval"];
 const GIT_OPTIONS_WITH_VALUE: [&str; 5] = ["-C", "-c", "--git-dir", "--work-tree", "--namespace"];
 const GH_API_BODY_FLAGS: [&str; 5] = ["-f", "-F", "--field", "--raw-field", "--input"];
@@ -80,10 +88,19 @@ pub fn tokenize(command: &str) -> Result<Vec<String>, TokenizeError> {
     let mut word = String::new();
     // A quoted empty string ('') is still a word, so track "in a word" apart from `word`.
     let mut in_word = false;
+    let mut heredocs: Vec<Heredoc> = Vec::new();
     let mut chars = command.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
             ' ' | '\t' | '\r' => end_word(&mut tokens, &mut word, &mut in_word),
+            '<' if chars.peek() == Some(&'<') => {
+                chars.next();
+                end_word(&mut tokens, &mut word, &mut in_word);
+                // `<<<` is a here-string: its word is read as an ordinary word.
+                if chars.next_if_eq(&'<').is_none() {
+                    heredocs.extend(read_heredoc_header(&mut chars));
+                }
+            }
             '#' if !in_word => {
                 while chars.peek().is_some_and(|&next| next != '\n') {
                     chars.next();
@@ -92,13 +109,20 @@ pub fn tokenize(command: &str) -> Result<Vec<String>, TokenizeError> {
             c if SEPARATOR_CHARS.contains(c) => {
                 end_word(&mut tokens, &mut word, &mut in_word);
                 let mut run = String::from(c);
-                while let Some(&next) = chars.peek()
+                let mut ends_line = c == '\n';
+                // A heredoc body starts on the line after its `<<`, so stop at that newline.
+                while !(ends_line && !heredocs.is_empty())
+                    && let Some(&next) = chars.peek()
                     && SEPARATOR_CHARS.contains(next)
                 {
                     run.push(next);
                     chars.next();
+                    ends_line = next == '\n';
                 }
                 tokens.push(run);
+                if ends_line {
+                    skip_heredoc_bodies(&mut chars, &mut heredocs);
+                }
             }
             '\'' => {
                 in_word = true;
@@ -129,8 +153,12 @@ pub fn tokenize(command: &str) -> Result<Vec<String>, TokenizeError> {
                 }
             }
             '\\' => {
-                in_word = true;
-                word.push(chars.next().ok_or(TokenizeError::TrailingEscape)?);
+                let escaped = chars.next().ok_or(TokenizeError::TrailingEscape)?;
+                // A backslash before a newline joins the two lines.
+                if escaped != '\n' {
+                    in_word = true;
+                    word.push(escaped);
+                }
             }
             other => {
                 in_word = true;
@@ -140,6 +168,60 @@ pub fn tokenize(command: &str) -> Result<Vec<String>, TokenizeError> {
     }
     end_word(&mut tokens, &mut word, &mut in_word);
     Ok(tokens)
+}
+
+/// A heredoc whose body has not been read yet.
+struct Heredoc {
+    delimiter: String,
+    /// `<<-` lets the closing line start with tabs.
+    strip_tabs: bool,
+}
+
+/// Reads what follows `<<`: the optional `-` and the delimiter, without its quotes.
+fn read_heredoc_header(chars: &mut Peekable<Chars<'_>>) -> Option<Heredoc> {
+    let strip_tabs = chars.next_if_eq(&'-').is_some();
+    while chars.next_if(|c| matches!(c, ' ' | '\t')).is_some() {}
+    let mut delimiter = String::new();
+    while let Some(c) = chars.next_if(|c| !c.is_whitespace() && !SEPARATOR_CHARS.contains(*c)) {
+        if !matches!(c, '\'' | '"' | '\\') {
+            delimiter.push(c);
+        }
+    }
+    (!delimiter.is_empty()).then_some(Heredoc {
+        delimiter,
+        strip_tabs,
+    })
+}
+
+/// Drops the body of each pending heredoc. A body with no closing line is not dropped: `<<`
+/// may not have been a heredoc (`$((1<<2))`), and the gate must still read what follows.
+fn skip_heredoc_bodies(chars: &mut Peekable<Chars<'_>>, pending: &mut Vec<Heredoc>) {
+    for heredoc in pending.drain(..) {
+        let mut probe = chars.clone();
+        loop {
+            let mut line = String::new();
+            let mut ended_line = false;
+            for c in probe.by_ref() {
+                if c == '\n' {
+                    ended_line = true;
+                    break;
+                }
+                line.push(c);
+            }
+            let closing = if heredoc.strip_tabs {
+                line.trim_start_matches('\t')
+            } else {
+                line.as_str()
+            };
+            if closing == heredoc.delimiter {
+                *chars = probe;
+                break;
+            }
+            if !ended_line {
+                break;
+            }
+        }
+    }
 }
 
 fn end_word(tokens: &mut Vec<String>, word: &mut String, in_word: &mut bool) {
@@ -179,11 +261,113 @@ fn is_env_assignment(word: &str) -> bool {
 }
 
 fn strip_wrappers(segment: &[String]) -> &[String] {
-    let skipped = segment
-        .iter()
-        .take_while(|word| WRAPPER_COMMANDS.contains(&word.as_str()) || is_env_assignment(word))
-        .count();
-    &segment[skipped..]
+    let mut index = 0;
+    while let Some(word) = segment.get(index) {
+        if SHELL_KEYWORDS.contains(&word.as_str()) || is_env_assignment(word) {
+            index += 1;
+        } else if WRAPPER_COMMANDS.contains(&word.as_str()) {
+            index += 1 + wrapper_argument_count(word, &segment[index + 1..]);
+        } else {
+            break;
+        }
+    }
+    &segment[index..]
+}
+
+/// How many words after a wrapper belong to the wrapper: its options, their values, and the
+/// duration of `timeout`.
+fn wrapper_argument_count(wrapper: &str, rest: &[String]) -> usize {
+    let mut count = 0;
+    while let Some(word) = rest.get(count) {
+        if word == "--" {
+            return count + 1;
+        }
+        if !word.starts_with('-') {
+            break;
+        }
+        count += if option_takes_value(wrapper, word) {
+            2
+        } else {
+            1
+        };
+    }
+    let has_duration = wrapper == "timeout"
+        && rest
+            .get(count)
+            .is_some_and(|word| word.starts_with(|c: char| c.is_ascii_digit()));
+    count + usize::from(has_duration)
+}
+
+fn option_takes_value(wrapper: &str, option: &str) -> bool {
+    match wrapper {
+        "sudo" => matches!(
+            option,
+            "-u" | "-g" | "-h" | "-p" | "-C" | "-r" | "-t" | "-U"
+        ),
+        "env" => matches!(option, "-u" | "-C" | "-S"),
+        "nice" => option == "-n",
+        "timeout" => matches!(option, "-s" | "-k"),
+        "xargs" => matches!(option, "-I" | "-n" | "-P" | "-L" | "-d" | "-E" | "-s"),
+        _ => false,
+    }
+}
+
+fn program_name(word: &str) -> &str {
+    Path::new(word)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(word)
+}
+
+/// The command lines inside `$(...)` and backticks in a word. The tokenizer reads a quoted
+/// substitution as plain text, so the gate reads it again as a command.
+fn substituted_commands(word: &str) -> Vec<String> {
+    let chars: Vec<char> = word.chars().collect();
+    let mut bodies = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] == '$' && chars.get(index + 1) == Some(&'(') {
+            let start = index + 2;
+            let mut depth = 1;
+            let mut end = start;
+            while end < chars.len() {
+                match chars[end] {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                if depth == 0 {
+                    break;
+                }
+                end += 1;
+            }
+            bodies.push(chars[start..end].iter().collect());
+            index = end + 1;
+        } else if chars[index] == '`' {
+            let start = index + 1;
+            let end = chars[start..]
+                .iter()
+                .position(|&c| c == '`')
+                .map_or(chars.len(), |offset| start + offset);
+            bodies.push(chars[start..end].iter().collect());
+            index = end + 1;
+        } else {
+            index += 1;
+        }
+    }
+    bodies
+}
+
+/// How many times a segment names `git commit`, wherever the words sit. More than the gate
+/// recognized means a commit hides in a form the parser does not read, such as `find -exec`.
+fn commit_mentions(segment: &[String], cwd: &Path) -> usize {
+    (0..segment.len())
+        .filter(|&index| program_name(&segment[index]) == "git")
+        .filter(|&index| {
+            split_git_subcommand(&segment[index + 1..], cwd)
+                .is_some_and(|(subcommand, _, _)| subcommand == "commit")
+        })
+        .count()
 }
 
 /// The git and gh writes in `command`, run from `cwd`. A command that cannot be split into
@@ -209,16 +393,20 @@ pub fn find_gated_actions(command: &str, cwd: &Path) -> Vec<GatedAction> {
         let Some((first, rest)) = strip_wrappers(&segment).split_first() else {
             continue;
         };
-        let program = Path::new(first)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(first);
+        let program = program_name(first);
+        let mut recognized_commits = 0;
+        if !SHELL_COMMANDS.contains(&program) {
+            for body in segment.iter().flat_map(|word| substituted_commands(word)) {
+                actions.extend(find_gated_actions(&body, &current_dir));
+            }
+        }
         match program {
             "cd" | "pushd" if !rest.is_empty() => {
                 current_dir = paths::resolve_arg(&current_dir, &rest[0]);
             }
             "git" => {
                 if let Some(mut action) = parse_git(rest, &current_dir) {
+                    recognized_commits += 1;
                     action.preceding_git = steps
                         .iter()
                         .filter(|(repo_dir, _)| *repo_dir == action.repo_dir)
@@ -244,6 +432,14 @@ pub fn find_gated_actions(command: &str, cwd: &Path) -> Vec<GatedAction> {
             }
             _ => {}
         }
+        if commit_mentions(&segment, &current_dir) > recognized_commits {
+            actions.push(GatedAction {
+                kind: ActionKind::Unparsed,
+                repo_dir: current_dir.clone(),
+                args: Vec::new(),
+                preceding_git: Vec::new(),
+            });
+        }
     }
     actions
 }
@@ -258,10 +454,7 @@ pub fn runs_terry_exclude(command: &str) -> bool {
         let Some((first, rest)) = strip_wrappers(segment).split_first() else {
             return false;
         };
-        let program = Path::new(first)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(first);
+        let program = program_name(first);
         let changes_list = rest
             .first()
             .is_some_and(|subcommand| subcommand == "exclude" || subcommand == "include");
@@ -302,6 +495,9 @@ fn split_git_subcommand<'a>(
             }
             index += 2;
         } else {
+            if let Some(dir) = option.strip_prefix("-C").filter(|dir| !dir.is_empty()) {
+                repo_dir = paths::resolve_arg(&repo_dir, dir);
+            }
             index += 1;
         }
     }

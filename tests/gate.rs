@@ -388,6 +388,29 @@ fn should_show_the_named_paths_only_when_commit_names_files() {
 }
 
 #[test]
+fn should_review_the_commit_when_it_follows_a_shell_keyword_in_a_long_command() {
+    let sandbox = Sandbox::new();
+    sandbox.stage_clean_change();
+
+    let reason =
+        sandbox.reason_of(sandbox.run_hook(
+            "git status | head -5; if true; then git commit -m \"bump\"; fi && git log -1",
+        ));
+
+    assert!(reason.contains("git commit: Staged changes"), "{reason}");
+}
+
+#[test]
+fn should_review_the_commit_when_it_sits_in_a_quoted_substitution() {
+    let sandbox = Sandbox::new();
+    sandbox.stage_clean_change();
+
+    let reason = sandbox.reason_of(sandbox.run_hook("echo \"$(git commit -m bump)\""));
+
+    assert!(reason.contains("git commit: Staged changes"), "{reason}");
+}
+
+#[test]
 fn should_warn_when_a_stash_runs_before_the_commit() {
     let sandbox = Sandbox::new();
     sandbox.stage_clean_change();

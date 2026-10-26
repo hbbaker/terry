@@ -168,3 +168,86 @@ fn should_spot_commands_that_rewrite_files() {
         assert!(!is_auto_fix_command(command), "{command}");
     }
 }
+
+fn finds_commit(command: &str) -> bool {
+    kinds(command, "/r")
+        .iter()
+        .any(|(kind, _)| *kind == ActionKind::Commit)
+}
+
+#[test]
+fn should_find_the_commit_when_it_follows_a_shell_keyword_or_brace() {
+    assert!(finds_commit("if true; then git commit -m x; fi"));
+    assert!(finds_commit("{ git commit -m x; }"));
+    assert!(finds_commit("! git commit -m x"));
+    assert!(finds_commit("for f in a; do git commit -m x; done"));
+}
+
+#[test]
+fn should_find_the_commit_when_it_sits_in_a_command_substitution() {
+    assert!(finds_commit(r#"echo "$(git commit -m x)""#));
+    assert!(finds_commit("echo `git commit -m x`"));
+    assert!(finds_commit("echo $(git commit -m x)"));
+}
+
+#[test]
+fn should_use_the_folder_when_git_options_are_attached() {
+    assert_eq!(
+        kinds("git -C/tmp/r commit -m x", "/")[0],
+        (ActionKind::Commit, PathBuf::from("/tmp/r"))
+    );
+    assert!(finds_commit("git --git-dir=/x/.git commit -m x"));
+    assert!(finds_commit("git -ccore.editor=true commit"));
+    assert!(finds_commit("git --no-pager commit"));
+}
+
+#[test]
+fn should_join_the_lines_when_a_backslash_ends_a_line() {
+    assert!(finds_commit("git add -A && \\\ngit commit -m x"));
+    assert!(finds_commit("git \\\n  commit -m x"));
+}
+
+#[test]
+fn should_skip_wrapper_flags_when_a_wrapper_runs_git() {
+    assert!(finds_commit("sudo -u dev git commit -m x"));
+    assert!(finds_commit("timeout 30 git commit -m x"));
+    assert!(finds_commit("env -i git commit -m x"));
+    assert!(finds_commit("nice -n 5 git commit -m x"));
+    assert!(finds_commit("echo x | xargs git commit -m"));
+}
+
+#[test]
+fn should_skip_a_heredoc_body_when_reading_the_command() {
+    assert_eq!(
+        kinds("git commit -F - <<EOF\nit's x\nEOF", "/r")[0].0,
+        ActionKind::Commit
+    );
+    assert!(kinds("cat <<'EOF'\ngit commit -m x\nEOF", "/r").is_empty());
+}
+
+#[test]
+fn should_flag_a_git_commit_that_hides_in_an_unknown_position() {
+    assert_eq!(
+        kinds("find . -name x -exec git commit -m y {} +", "/r")[0].0,
+        ActionKind::Unparsed
+    );
+}
+
+#[test]
+fn should_not_flag_git_commands_that_only_mention_commit() {
+    assert!(kinds("git log --grep commit", "/r").is_empty());
+    assert!(kinds("echo hi", "/r").is_empty());
+    assert!(kinds("if true; then git push; fi", "/r").is_empty());
+}
+
+#[test]
+fn should_find_the_commit_in_a_long_mixed_chain() {
+    let command = "cd /r && git add -A && git status | head; if true; then git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"; fi && git push";
+    assert_eq!(
+        kinds(command, "/")
+            .iter()
+            .filter(|(kind, _)| *kind == ActionKind::Commit)
+            .count(),
+        1
+    );
+}
