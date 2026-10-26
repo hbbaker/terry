@@ -31,6 +31,7 @@ const BRANCH_SEPARATOR: &str = " -> ";
 const MAX_PREVIEW_LINES: usize = 120;
 const MAX_PREVIEW_LINE_CHARS: usize = 200;
 const MAX_DENIAL_PROBLEMS: usize = 50;
+const MAX_LISTED_EXCLUDED: usize = 5;
 const DELTA_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn color_on() -> bool {
@@ -144,8 +145,21 @@ pub fn lint_summary(lint: &LintReport) -> Vec<String> {
             &format!("LINT passed on added lines ({})", lint.tools_run.join(", ")),
             &[GREEN, BOLD],
         ));
-    } else if lint.missing_tools.is_empty() {
+    } else if lint.missing_tools.is_empty() && lint.excluded_files.is_empty() {
         lines.push("LINT: no linter for these file types".to_owned());
+    }
+    if !lint.excluded_files.is_empty() {
+        let shown = &lint.excluded_files[..lint.excluded_files.len().min(MAX_LISTED_EXCLUDED)];
+        let more = lint.excluded_files.len() - shown.len();
+        let more = if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        };
+        lines.push(paint(
+            &format!("LINT skipped, listed in .terry: {}{more}", shown.join(", ")),
+            &[YELLOW],
+        ));
     }
     if lint.old_problem_count > 0 {
         lines.push(format!(

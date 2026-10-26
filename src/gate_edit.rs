@@ -3,7 +3,8 @@
 //! While a lint fix is pending in a repo, every edit there asks; the user approves each fix in
 //! the normal edit prompt, which shows the diff. It also denies every edit to the approvals
 //! folder, which only the terry pane writes, and to terry's config file, which only the user
-//! changes.
+//! changes. An edit to a project's `.terry` file asks, because the file can switch lint off for
+//! files.
 //!
 //! This hook fails open (a crash lets the edit follow the normal permission rules), because it
 //! runs on every edit in every project; the Bash gate still reviews the result before any git
@@ -17,6 +18,7 @@ use crate::approvals;
 use crate::config;
 use crate::hook::{self, Decision};
 use crate::lint_fix;
+use crate::terry_file;
 
 const PATH_INPUT_KEYS: [&str; 2] = ["file_path", "notebook_path"];
 
@@ -49,6 +51,13 @@ fn answer() {
         return;
     }
     if config::is_excluded(&path) {
+        return;
+    }
+    if path
+        .file_name()
+        .is_some_and(|name| name == terry_file::FILE_NAME)
+    {
+        hook::decide(Decision::Ask, terry_file::EDIT_PROMPT);
         return;
     }
     let Some(repo_root) = lint_fix::pending_repo_for(&path) else {

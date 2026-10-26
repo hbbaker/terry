@@ -94,6 +94,7 @@ the fallback ESLint in `lint/`. A tool that is not installed is skipped, and the
 | Setting | Where | Default |
 | --- | --- | --- |
 | Folders where terry is off | `terry exclude` / `terry include`; the list is in `~/.config/terry/config.json` (or under `$XDG_CONFIG_HOME`) | none |
+| Files that are not linted in a project | `.terry` at the repo root: `{"lint": {"exclude": ["vendor/", "*.generated.py"]}}` (see "Skip files from lint") | none |
 | Pane scroll speed (rows per mouse wheel tick, 1 to 50) | `/config`, row "Diff pane scroll speed"; or `~/.claude/settings.json`: `"pluginConfigs": { "terry@terry": { "options": { "scrollRows": 5 } } }` | 3 |
 | Skip the pane step | `DIFF_GATE_PANE_REVIEW=0` in the environment Claude Code runs in | pane step on |
 | Plain prompt preview | `DIFF_GATE_COLOR=0` in the environment Claude Code runs in | colors on |
@@ -109,6 +110,13 @@ A change in `/config` reloads the plugin at once. After you edit `settings.json`
   branches from the default branch down to the one checked out, such as `main -> dev ->
   subfeature`, one colour per layer. Git stores no parent for a branch, so terry picks, at each
   step, the nearest local branch behind the one above it. `terry branches` prints the chain.
+- **Skip files from lint:** put a `.terry` file at the repo root, for example
+  `{"lint": {"exclude": ["vendor/", "*.generated.py", "/docs/**"]}}`. The patterns work like
+  `.gitignore`: `*` and `?` stay inside one name, `**` crosses folders, a pattern with no `/`
+  matches at any depth, a leading or inner `/` starts at the repo root, and a trailing `/` means
+  a folder. `!` and `[...]` are not supported. The review lists the files it skipped. A broken
+  `.terry` file excludes nothing, and the review says why. Because the file can switch lint off,
+  Claude's edits to it go to the permission prompt, and a commit that changes it carries a note.
 - **Read the full patch in a terminal:** `delta < <patch path>`. The prompt shows the path.
 - **Open the pane again:** `/terry`.
 - **Approve or reject with the keyboard:** the pane takes the keys when it opens (unless you
