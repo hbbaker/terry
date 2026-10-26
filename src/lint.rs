@@ -16,6 +16,7 @@ use serde_json::Value;
 use crate::patch::{added_lines_by_file, formatter_changed_lines};
 use crate::paths;
 use crate::process;
+use crate::terry_file::TerryFile;
 use crate::text::strip_ansi;
 
 const PROJECT_VENV_DIRS: [&str; 2] = [".venv", "venv"];
@@ -71,6 +72,8 @@ pub struct LintReport {
     pub tool_errors: Vec<String>,
     /// Linters these files need that are not installed.
     pub missing_tools: Vec<String>,
+    /// Files a linter would read that the repo's `.terry` file leaves out.
+    pub excluded_files: Vec<String>,
 }
 
 impl LintReport {
@@ -112,11 +115,20 @@ type Linter = fn(&Path, &[String]) -> Result<ToolRun, String>;
 pub fn lint_patch(repo_root: &Path, patch: &str) -> LintReport {
     let repo_root = paths::resolve(repo_root);
     let added = added_lines_by_file(patch);
-    let present: Vec<String> = added
+    let mut report = LintReport::default();
+    let terry_file = TerryFile::read(&repo_root).unwrap_or_else(|error| {
+        report.tool_errors.push(error);
+        TerryFile::default()
+    });
+    let (excluded, present): (Vec<String>, Vec<String>) = added
         .keys()
         .filter(|path| repo_root.join(path).is_file())
         .take(MAX_LINT_FILES)
         .cloned()
+        .partition(|path| terry_file.excludes_from_lint(path));
+    report.excluded_files = excluded
+        .into_iter()
+        .filter(|path| has_linter(path))
         .collect();
     let python_files = with_suffix(&present, &PYTHON_SUFFIXES);
     let shell_files = with_suffix(&present, &SHELL_SUFFIXES);
@@ -128,7 +140,6 @@ pub fn lint_patch(repo_root: &Path, patch: &str) -> LintReport {
         (run_eslint, &eslint_files),
     ];
 
-    let mut report = LintReport::default();
     let mut problems = Vec::new();
     for (linter, files) in linters {
         if files.is_empty() {
@@ -158,6 +169,13 @@ pub fn lint_patch(repo_root: &Path, patch: &str) -> LintReport {
         }
     }
     report
+}
+
+/// True when one of the linters reads this kind of file.
+fn has_linter(path: &str) -> bool {
+    [&PYTHON_SUFFIXES[..], &SHELL_SUFFIXES, &ESLINT_SUFFIXES]
+        .iter()
+        .any(|suffixes| !with_suffix(&[path.to_owned()], suffixes).is_empty())
 }
 
 pub fn with_suffix(paths: &[String], suffixes: &[&str]) -> Vec<String> {
