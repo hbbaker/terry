@@ -7,11 +7,15 @@ pull request**, terry stops the command and shows you the diff before anything r
   colored preview of the diff. The full patch is saved under `~/.claude/diffs/`.
 - **Lint first.** terry lints the lines the change adds (ruff and `ruff format` for Python,
   shellcheck for shell, ESLint for JS/TS). If lint fails, the command is denied, Claude must fix
-  the problems, and **you approve every fix edit**. Then Claude runs the command again.
+  the problems, and **you approve every fix edit**. Then Claude runs the command again. A
+  `.terry` file in a project can list files that are not linted.
 - **Review in a pane first.** A "Diff review" pane opens beside the chat with the full diff,
   drawn with Claude Code's own diff colors, and **Approve** and **Reject** buttons. Claude waits
   while you scroll and read. Approve closes the pane, and Claude runs the command again: the
   permission prompt then asks you to confirm it.
+- **Branch chain.** The band above the prompt and the permission prompt show the branches from
+  the default branch down to the one checked out, such as `main -> dev -> subfeature`, one
+  colour per layer.
 - **Off where you say.** `terry exclude` turns terry off in a folder and every folder under it.
 - **Better `git diff`.** delta becomes git's pager, with strong add/remove colors and
   word-level marks.
@@ -72,15 +76,16 @@ Code's built-in security plugin keeps permission decisions from third-party plug
 
 Only the plugin writes approvals (`src/approvals.rs`), and only you change the exclude list.
 The gates deny any Claude shell command or file edit that names `~/.claude/diffs/approvals` or
-terry's config file, and any Claude command that runs `terry exclude` or `terry include`. This
+terry's config file, and any Claude command that runs `terry exclude` or `terry include`. A
+Claude edit to a project's `.terry` file asks, because that file can switch lint off. This
 blocks the plain ways around the review. A forged approval would still only reach the
 permission prompt: with the full diff, or, if it claims to come from the pane, with the pane
 open again beside the prompt and a line under it that says the diff was not approved there.
 
 | Folder | What it holds |
 | --- | --- |
-| `src/` | The `terry` binary: `gate_bash.rs` and `gate_edit.rs` (the two hooks), the diff builders, the lint runner, the pane approvals, the exclude config, and `install.rs`. |
-| `tests/` | The gate tests, against throwaway git repos. |
+| `src/` | The `terry` binary: `gate_bash.rs` and `gate_edit.rs` (the two hooks), `shell.rs` (reads the command line), the diff builders, the lint runner, `terry_file.rs` and `glob.rs` (the `.terry` file and its patterns), the branch chain in `git.rs`, the pane approvals, the exclude config, and `install.rs`. |
+| `tests/` | The gate tests, against throwaway git repos, and unit tests for the parser, the patterns and the branch chain. |
 | `lint/` | The fallback ESLint config, for repos with no ESLint of their own on this machine. |
 | `plugin/` | The Claude Code mod that draws the pane. |
 | `git/` | delta's colors. |
@@ -106,10 +111,10 @@ A change in `/config` reloads the plugin at once. After you edit `settings.json`
 
 - **Turn terry off in a folder:** run `terry exclude` there (or `terry exclude <folder>`) in
   your own terminal. It stays off in every folder under it. `terry include` turns it on again.
-- **See the branch chain:** the band above the prompt and the permission prompt show the
-  branches from the default branch down to the one checked out, such as `main -> dev ->
-  subfeature`, one colour per layer. Git stores no parent for a branch, so terry picks, at each
-  step, the nearest local branch behind the one above it. `terry branches` prints the chain.
+- **See the branch chain:** look at the band above the prompt, or at the `branch:` line in the
+  permission prompt. `terry branches` prints the chain, one branch per line, root first. At
+  each step terry picks the nearest local branch behind the one above it, and it stops at
+  `main` or `master`.
 - **Skip files from lint:** put a `.terry` file at the repo root, for example
   `{"lint": {"exclude": ["vendor/", "*.generated.py", "/docs/**"]}}`. The patterns work like
   `.gitignore`: `*` and `?` stay inside one name, `**` crosses folders, a pattern with no `/`
@@ -120,7 +125,9 @@ A change in `/config` reloads the plugin at once. After you edit `settings.json`
 - **Read the full patch in a terminal:** `delta < <patch path>`. The prompt shows the path.
 - **Open the pane again:** `/terry`.
 - **Approve or reject with the keyboard:** the pane takes the keys when it opens (unless you
-  are typing). Press `a` or `r`. Arrows and Page Up/Down scroll. Esc gives the keys back.
+  are typing). Press `y` to approve or `n` to reject. Arrows, Page Up/Down, Home and End scroll
+  the diff, and `a` and `d` scroll it sideways (the ◀ and ▶ buttons do the same). Esc gives the
+  keys back.
 - **No pane step:** with `DIFF_GATE_PANE_REVIEW=0`, or when the terry plugin is not enabled,
   the permission prompt is the only review.
 - **In an IDE or another window that cannot draw the pane:** terry finds this itself. When
@@ -136,6 +143,12 @@ A change in `/config` reloads the plugin at once. After you edit `settings.json`
 - Only commands **Claude** runs are gated. Commits you make in your own terminal are not.
 - The guards against Claude turning terry off read the command text. A hidden or encoded write
   to the approvals folder or the config file could get past them.
+- The `.terry` guard covers Claude's file edits. A shell command that writes `.terry` (for
+  example `echo ... >> .terry`) is not stopped, but a commit that changes `.terry` carries a
+  note in its review.
+- The branch chain is a guess. Git stores no parent for a branch, so terry uses the nearest
+  local branch behind the current one. After a squash merge, or when branches share a commit,
+  it can differ from the stack you have in mind.
 - While Claude Code shows a dialog (the permission prompt, a question), the pane gets no
   mouse wheel or keys, and a pane open beside the prompt can garble the terminal. That is why
   the review happens in the pane first, and why Approve closes the pane.
