@@ -9,6 +9,7 @@ use crate::lint::{self, LintReport};
 use crate::paths;
 use crate::shell::{ActionKind, GatedAction};
 use crate::stamp;
+use crate::terry_file;
 use crate::text::slug;
 
 const PATCH_RETENTION: Duration = Duration::from_secs(14 * 24 * 60 * 60);
@@ -37,7 +38,10 @@ pub fn review_action(action: GatedAction) -> ActionReview {
         save_patch(&result, review.action.kind).map(|patch_path| (result, patch_path))
     });
     match saved {
-        Ok((result, patch_path)) => {
+        Ok((mut result, patch_path)) => {
+            if terry_file::is_changed_by(&result.patch) {
+                result.notes.push(terry_file::CHANGED_NOTE.to_owned());
+            }
             if result.lintable && !result.patch.trim().is_empty() {
                 review.lint = Some(lint::lint_patch(&result.repo_root, &result.patch));
             }

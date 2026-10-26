@@ -755,6 +755,67 @@ fn should_deny_and_list_problem_when_added_line_fails_lint() {
 }
 
 #[test]
+fn should_not_lint_a_file_when_terry_file_excludes_it() {
+    if !has_tool("ruff") {
+        return;
+    }
+    let sandbox = Sandbox::new();
+    sandbox.write_file(".terry", r#"{"lint": {"exclude": ["app.py"]}}"#);
+    sandbox.write_file("app.py", "import os\nprint(\"v2\")\n");
+    sandbox.git(&sandbox.repo, &["add", "app.py"]);
+
+    let reason = sandbox.reason_of(sandbox.run_hook("git commit -m \"v2\""));
+
+    assert!(!reason.contains("F401"), "{reason}");
+}
+
+#[test]
+fn should_name_the_skipped_file_when_terry_file_excludes_it() {
+    let sandbox = Sandbox::new();
+    sandbox.write_file(".terry", r#"{"lint": {"exclude": ["app.py"]}}"#);
+    sandbox.stage_clean_change();
+
+    let reason = sandbox.reason_of(sandbox.run_hook("git commit -m \"v2\""));
+
+    assert!(
+        reason.contains("LINT skipped, listed in .terry: app.py"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn should_keep_linting_and_report_the_error_when_terry_file_is_not_valid() {
+    let sandbox = Sandbox::new();
+    sandbox.write_file(".terry", "{ not json");
+    sandbox.stage_clean_change();
+
+    let reason = sandbox.reason_of(sandbox.run_hook("git commit -m \"v2\""));
+
+    assert!(reason.contains("not valid JSON"), "{reason}");
+    assert!(!reason.contains("listed in .terry"), "{reason}");
+}
+
+#[test]
+fn should_note_the_change_when_the_commit_edits_terry_file() {
+    let sandbox = Sandbox::new();
+    sandbox.write_file(".terry", r#"{"lint": {"exclude": ["app.py"]}}"#);
+    sandbox.git(&sandbox.repo, &["add", ".terry"]);
+
+    let reason = sandbox.reason_of(sandbox.run_hook("git commit -m \"add .terry\""));
+
+    assert!(reason.contains("this change edits .terry"), "{reason}");
+}
+
+#[test]
+fn should_ask_when_claude_edits_terry_file() {
+    let sandbox = Sandbox::new();
+
+    let reason = sandbox.decision_of(sandbox.run_edit_gate(&sandbox.repo.join(".terry")), "ask");
+
+    assert!(reason.contains(".terry can switch lint off"), "{reason}");
+}
+
+#[test]
 fn should_deny_when_added_line_needs_formatting() {
     if !has_tool("ruff") {
         return;
