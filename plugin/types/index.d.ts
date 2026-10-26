@@ -46,6 +46,8 @@ declare module 'claude-code' {
       /** A held command to review in the permission prompt, as no pane can be drawn. */
       promptReviewFor: string | null
       gate: GateState
+      /** The branches from the default branch down to the checked-out one, by `terry branches`; empty when none. */
+      branchChain: string[]
       /** The pane's own scroll place: the index of the first diff row it shows. */
       diffRow: number
       /** How many columns the diff is scrolled to the left; 0 shows each line from its start. */
