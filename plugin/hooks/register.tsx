@@ -7,7 +7,17 @@ import { fitFiles, splitPatch } from './patch'
 import { buildRows, lastColumn, toBlocks } from './rows'
 import type { Row } from './rows'
 import { lastOffset, nextColumn, nextOffset } from './scroll'
-import { TOP_BAR_ART_GAP, flattenRows, parseTree, repoPath, rowLook, topBar } from './tree'
+import {
+  CLAUDE_COLOR,
+  TOP_BAR_ART_GAP,
+  activeLine,
+  flattenRows,
+  parseTree,
+  repoPath,
+  rowLook,
+  topBar,
+  withoutFirst,
+} from './tree'
 import type { TreeMarks } from './tree'
 
 const PANE = 'terry-diff'
@@ -20,6 +30,8 @@ const TREE_TITLE = 'Files'
 const TREE_PANE_COLUMNS = 34
 // Blank columns at the left edge of the tree pane.
 const TREE_PADDING = 2
+// Columns of a file row's mark (`✎`, `·`, or none), so the names line up whatever the mark is.
+const TREE_MARK_COLUMNS = 2
 const TREE_PANE_OPEN = { id: TREE_PANE, title: TREE_TITLE, columns: TREE_PANE_COLUMNS } as const
 const TREE_TIMEOUT_MS = 10_000
 // Columns one level of the branch chain moves a line to the right.
@@ -79,7 +91,7 @@ const gate = atom({ plugin: 'terry', key: 'gate' } as const, 'unknown')
 const branchChain = atom({ plugin: 'terry', key: 'branchChain' } as const, [])
 const tree = atom({ plugin: 'terry', key: 'tree' } as const, null)
 const claudeTouched = atom({ plugin: 'terry', key: 'claudeTouched' } as const, [])
-const reviewed = atom({ plugin: 'terry', key: 'reviewed' } as const, [])
+const claudeActive = atom({ plugin: 'terry', key: 'claudeActive' } as const, [])
 const collapsed = atom({ plugin: 'terry', key: 'collapsed' } as const, [])
 const treeRow = atom({ plugin: 'terry', key: 'treeRow' } as const, 0)
 const diffRow = atom({ plugin: 'terry', key: 'diffRow' } as const, 0)
@@ -178,6 +190,7 @@ async function showReview($: EngineInterface, toolUseId: string, onlyStage?: Rev
   await update($, review, () => loaded)
   // A checkout since the last poll must not leave an old chain beside this review.
   await refreshBranchChain($)
+  await refreshTree($)
   await update($, diffRow, () => 0)
   await update($, diffColumn, () => 0)
   // In the pane stage no dialog is up, so the pane may take the keys for its hotkeys.
@@ -215,8 +228,7 @@ async function recordDecision($: EngineInterface, current: Review, decision: Pan
 async function approve($: EngineInterface, current: Review): Promise<void> {
   if (!(await writeApproval($, current, 'pane'))) return
   await recordDecision($, current, 'approved')
-  const approvedPaths = current.sections.flatMap(section => section.files.map(file => file.path))
-  await update($, reviewed, paths => [...new Set([...paths, ...approvedPaths])])
+  await refreshTree($)
   await $.ui.close({ id: PANE })
   await $.prompt.submit({
     text: `terry: I approved the diff in the pane. Run the same command again, exactly as before:\n${current.command}`,
@@ -226,6 +238,7 @@ async function approve($: EngineInterface, current: Review): Promise<void> {
 /** The Reject button: puts a reply in the prompt box for the user to finish with a reason. */
 async function reject($: EngineInterface, current: Review): Promise<void> {
   await recordDecision($, current, 'rejected')
+  await refreshTree($)
   await $.prompt.fill({ text: `terry: I rejected the diff for: ${current.command}\nReason: ` })
 }
 
@@ -259,18 +272,30 @@ async function refreshTree($: EngineInterface): Promise<void> {
   if (snapshot !== null) await update($, tree, () => snapshot)
 }
 
-/**
- * After Claude's Edit or Write: remembers the file as Claude's, and as not reviewed again, then
- * reads the tree so the file's new status shows.
- */
+/** After Claude's Edit or Write: remembers the file as Claude's, then reads the tree so its status shows. */
 async function noteClaudeEdit($: EngineInterface, filePath: string): Promise<void> {
   const snapshot = await read($, tree)
   const path = snapshot === null ? null : repoPath(snapshot.root, filePath)
   if (path !== null) {
     await update($, claudeTouched, paths => (paths.includes(path) ? paths : [...paths, path]))
-    await update($, reviewed, paths => paths.filter(reviewedPath => reviewedPath !== path))
   }
   await refreshTree($)
+}
+
+/**
+ * Runs an Edit or Write call of Claude's. The file is Claude's, and active, from the moment the
+ * call starts (also while it waits for the user's permission) until it ends, even if it fails.
+ */
+async function whileEditing<T>($: EngineInterface, filePath: string, run: () => Promise<T> | T): Promise<T> {
+  const snapshot = await read($, tree)
+  const path = snapshot === null ? null : repoPath(snapshot.root, filePath)
+  if (path !== null) await update($, claudeActive, paths => [...paths, path])
+  try {
+    return await run()
+  } finally {
+    if (path !== null) await update($, claudeActive, paths => withoutFirst(paths, path))
+    await noteClaudeEdit($, filePath)
+  }
 }
 
 async function readGateState($: EngineInterface): Promise<GateState> {
@@ -357,6 +382,8 @@ export const register: Register = (on, options) => {
   let treeBarRows = 0
 
   on('session.start', async ($, e, next) => {
+    // A reload while a call ran leaves its file marked active; nothing is running now.
+    await update($, claudeActive, () => [])
     await $.command.register({
       name: COMMAND,
       description: 'Open the terry file tree, and show the last diff the gate asked you to approve',
@@ -418,18 +445,10 @@ export const register: Register = (on, options) => {
     return result
   })
 
-  // Claude's own edits: the tree marks these files as Claude's.
-  on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
-    const result = await next(e)
-    await noteClaudeEdit($, e.file_path)
-    return result
-  })
-
-  on('tool.call', { tool: 'Write' }, async ($, e, next) => {
-    const result = await next(e)
-    await noteClaudeEdit($, e.file_path)
-    return result
-  })
+  // Claude's own edits: the tree shows the file in Claude's colour while the call runs, and
+  // keeps it marked as Claude's after.
+  on('tool.call', { tool: 'Edit' }, ($, e, next) => whileEditing($, e.file_path, () => next(e)))
+  on('tool.call', { tool: 'Write' }, ($, e, next) => whileEditing($, e.file_path, () => next(e)))
 
   // A prompt cannot be submitted while the turn that holds the command runs; send it after.
   on('turn.complete', async ($, e, next) => {
@@ -551,9 +570,9 @@ export const register: Register = (on, options) => {
   })
 
   // The tree pane: a top bar that stays put, terry (at rest, or alert while he holds a command)
-  // with the branch chain, and under it the files. Before any diff was reviewed the files are
-  // plain; after that, the changed ones are coloured by status, marked by who changed them, and
-  // bold until the user approved them.
+  // with the branch chain, and under it the files. The changed ones are coloured by status, marked
+  // by who changed them, and bold until they are committed. `terry tree` counts the changes from
+  // where the branch last met what is published, so landed commits stay marked until a push.
   on('ui.render', { component: 'Pane', requestId: TREE_PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     if ((await read($, gate)) !== 'on') return <Text dimColor>Terry is off in this folder.</Text>
@@ -561,16 +580,20 @@ export const register: Register = (on, options) => {
     const holding = isHolding(current)
     const chain = await read($, branchChain)
     const snapshot = await read($, tree)
+    const allRows = snapshot === null ? [] : flattenRows(snapshot.nodes)
+    const changedCount = allRows.filter(row => !row.isDir && row.status !== 'clean').length
+    const activePaths = await read($, claudeActive)
+    const editing = activeLine(activePaths)
     const marks: TreeMarks = {
-      hasReviewed: current !== null,
+      hasChanges: changedCount > 0,
       collapsed: new Set(await read($, collapsed)),
       claudeTouched: new Set(await read($, claudeTouched)),
-      reviewed: new Set(await read($, reviewed)),
+      claudeActive: new Set(activePaths),
     }
 
     const columns = e.props.bodyColumns - TREE_PADDING
     const art = holding ? TERRY_SMALL_ALERT : TERRY_SMALL_CALM
-    const wordRows = 1 + (holding ? 1 : 0) + chain.length + (marks.hasReviewed ? 1 : 0)
+    const wordRows = 1 + (holding ? 1 : 0) + chain.length + (editing !== null ? 1 : 0) + (changedCount > 0 ? 1 : 0)
     const bar = topBar({
       artRows: art.length,
       artColumns: Math.max(...art.map(line => line.length)),
@@ -580,8 +603,6 @@ export const register: Register = (on, options) => {
     })
     treeBarRows = bar.rows
 
-    const allRows = snapshot === null ? [] : flattenRows(snapshot.nodes)
-    const changedCount = allRows.filter(row => !row.isDir && row.status !== 'clean').length
     const rows = snapshot === null ? [] : flattenRows(snapshot.nodes, marks.collapsed)
     const windowRows = Math.max(1, e.props.scroll.bodyRows - bar.rows)
     const first = Math.min(await read($, treeRow), lastOffset(rows.length, windowRows))
@@ -619,9 +640,14 @@ export const register: Register = (on, options) => {
             {depth === 0 ? branch : `${BRANCH_INDENT.repeat(depth - 1)}↳ ${branch}`}
           </Text>
         ))}
-        {marks.hasReviewed && (
+        {editing !== null && (
+          <Text bold color={CLAUDE_COLOR} wrap="truncate-end">
+            {`✎ ${editing}`}
+          </Text>
+        )}
+        {changedCount > 0 && (
           <Text dimColor wrap="truncate-end">
-            {`${changedCount} changed`}
+            {`${changedCount} changed since ${snapshot?.since ?? ''}`}
           </Text>
         )}
       </Box>
@@ -641,29 +667,54 @@ export const register: Register = (on, options) => {
         ) : (
           shown.map(row => {
             const look = rowLook(row, marks)
-            const name = (
-              <Text {...look.style} wrap="truncate-end">
-                {`${look.glyph}${row.name}${row.isDir ? '/' : ''}`}
-              </Text>
+            const label = `${row.name}${row.isDir ? '/' : ''}`
+            const mark = look.glyph.trim()
+            const guide = (
+              <Box flexShrink={0}>
+                <Text dimColor>{row.guide}</Text>
+              </Box>
             )
+            const badge = (
+              <Box flexShrink={0} marginLeft={1}>
+                <Text color={look.badgeColor} bold>
+                  {look.badge}
+                </Text>
+              </Box>
+            )
+            // Only the name may shrink (and is cut with an ellipsis), so the names line up: the
+            // guide, the mark and the letter keep their widths. A row has no fragment: the
+            // engine would lay its children out in a column.
+            if (row.isDir) {
+              return (
+                <Box flexDirection="row">
+                  {guide}
+                  <Box flexShrink={1}>
+                    {/* A click on a folder closes or opens it; Tab and Enter do the same. */}
+                    <Button key={row.path} plain onPress={() => void toggleFolder($, row.path)}>
+                      <Text {...look.style} wrap="truncate-end">
+                        {`${look.glyph}${label}`}
+                      </Text>
+                    </Button>
+                  </Box>
+                  {look.badge !== '' && badge}
+                </Box>
+              )
+            }
             return (
               <Box flexDirection="row">
-                <Text dimColor>{row.guide}</Text>
-                <Box flexGrow={1} flexShrink={1}>
-                  {/* A click on a folder closes or opens it; Tab and Enter do the same. */}
-                  {row.isDir ? (
-                    <Button key={row.path} plain onPress={() => void toggleFolder($, row.path)}>
-                      {name}
-                    </Button>
-                  ) : (
-                    name
+                {guide}
+                {/* The mark has a box of its own, TREE_MARK_COLUMNS wide, whatever it is. */}
+                <Box width={TREE_MARK_COLUMNS} flexShrink={0}>
+                  {mark !== '' && (
+                    <Text {...(look.glyphColor ? { color: look.glyphColor, bold: true } : look.style)}>{mark}</Text>
                   )}
                 </Box>
-                {look.badge !== '' && (
-                  <Text color={look.badgeColor} bold>
-                    {` ${look.badge}`}
+                <Box flexShrink={1}>
+                  <Text {...look.style} wrap="truncate-end">
+                    {label}
                   </Text>
-                )}
+                </Box>
+                {look.badge !== '' && badge}
               </Box>
             )
           })
