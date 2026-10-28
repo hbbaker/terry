@@ -13,9 +13,19 @@ pull request**, terry stops the command and shows you the diff before anything r
   drawn with Claude Code's own diff colors, and **Approve** and **Reject** buttons. Claude waits
   while you scroll and read. Approve closes the pane, and Claude runs the command again: the
   permission prompt then asks you to confirm it.
-- **Branch chain.** The band above the prompt and the permission prompt show the branches from
-  the default branch down to the one checked out, such as `main -> dev -> subfeature`, one
-  colour per layer.
+- **Branch chain.** The "Files" pane and the permission prompt show the branches from the
+  default branch down to the one checked out, such as `main -> dev -> subfeature`, one colour per
+  layer. In a terminal too narrow for the pane, a band above the prompt shows it instead.
+- **File tree.** A "Files" pane stays open beside the chat with terry's owl, the branch chain
+  and every file of the repo (tracked files, and untracked ones that `.gitignore` does not
+  hide). Before terry has reviewed a diff the tree is plain. After that, changed files take the
+  colour of their status (green added, yellow modified, red deleted, cyan untracked) and a
+  letter at the end of the row (`A`, `M`, `D`, `?`), a `✎` marks a file Claude edited and a `·` a
+  file you changed, and a file is bold until you approve its diff. A small Terry sits in a bar
+  at the top of the pane, with the branch chain and a count of changed files; the bar stays in
+  place while the tree scrolls under it. Click a folder to close or open it (or Tab to it and
+  press Enter); a closed folder shows how many changed files it hides. The "Diff review" pane
+  opens as a second tab on top of it.
 - **Off where you say.** `terry exclude` turns terry off in a folder and every folder under it.
 - **Better `git diff`.** delta becomes git's pager, with strong add/remove colors and
   word-level marks.
@@ -111,8 +121,8 @@ A change in `/config` reloads the plugin at once. After you edit `settings.json`
 
 - **Turn terry off in a folder:** run `terry exclude` there (or `terry exclude <folder>`) in
   your own terminal. It stays off in every folder under it. `terry include` turns it on again.
-- **See the branch chain:** look at the band above the prompt, or at the `branch:` line in the
-  permission prompt. `terry branches` prints the chain, one branch per line, root first. At
+- **See the branch chain:** look at the "Files" pane (or the band above the prompt in a narrow
+  terminal), or at the `branch:` line in the permission prompt. `terry branches` prints the chain, one branch per line, root first. At
   each step terry picks the nearest local branch behind the one above it, and it stops at
   `main` or `master`.
 - **Skip files from lint:** put a `.terry` file at the repo root, for example
@@ -123,7 +133,11 @@ A change in `/config` reloads the plugin at once. After you edit `settings.json`
   `.terry` file excludes nothing, and the review says why. Because the file can switch lint off,
   Claude's edits to it go to the permission prompt, and a commit that changes it carries a note.
 - **Read the full patch in a terminal:** `delta < <patch path>`. The prompt shows the path.
-- **Open the pane again:** `/terry`.
+- **See the files:** look at the "Files" pane. `terry tree` prints the same data as JSON: the
+  repo root, the branch, and the files nested in folders, each with its status against the last
+  commit.
+- **Open the panes again:** `/terry` opens the "Files" pane, and the "Diff review" pane too when
+  a diff was reviewed.
 - **Approve or reject with the keyboard:** the pane takes the keys when it opens (unless you
   are typing). Press `y` to approve or `n` to reject. Arrows, Page Up/Down, Home and End scroll
   the diff, and `a` and `d` scroll it sideways (the ◀ and ▶ buttons do the same). Esc gives the
@@ -152,8 +166,16 @@ A change in `/config` reloads the plugin at once. After you edit `settings.json`
 - While Claude Code shows a dialog (the permission prompt, a question), the pane gets no
   mouse wheel or keys, and a pane open beside the prompt can garble the terminal. That is why
   the review happens in the pane first, and why Approve closes the pane.
-- The pane opens without your request only in a terminal 144 columns or wider (110 once you
-  have opened it with `/terry`); in a narrower one, run `/terry`.
+- The panes open without your request only in a terminal 144 columns or wider (110 once you
+  have opened one with `/terry`); in a narrower one, run `/terry`. Claude Code docks a pane at
+  most 45% of the width wide, and shows two open panes as tabs, not side by side: while you
+  review a diff you see the diff, and the file tree is one tab away.
+- The tree colours come from `git status`, so a file changed outside Claude Code shows after the
+  next Bash, Edit or Write call, or within 15 seconds. "Claude edited" counts only Edit and
+  Write calls; a change made by a command Claude runs shows as yours. A file you change after
+  you approved its diff stays dim.
+- `terry tree` lists every file, and the plugin reads the whole answer. A very large repo can
+  give more output than the plugin reads, and the tree then keeps its last good state.
 - The pane draws up to about 90,000 characters of diff; past that, it lists how many files
   it left out and where the full patch is.
 - Claude Code runs the gate before the whole command line. When one line runs `git add`, `rm`,

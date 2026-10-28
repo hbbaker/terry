@@ -39,6 +39,15 @@ export type Review = {
  */
 export type GateState = 'on' | 'off' | 'unknown'
 
+/** How a file differs from the last commit, as `terry tree` words it. */
+export type TreeStatus = 'clean' | 'added' | 'modified' | 'deleted' | 'untracked'
+
+/** One entry of `terry tree`: a file with its status, or a folder with its entries. */
+export type TreeNode = { file: string; status: TreeStatus } | { dir: string; children: TreeNode[] }
+
+/** What `terry tree` printed: the repo root (absolute), the checked-out branch and the files. */
+export type TreeSnapshot = { root: string; branch: string; nodes: TreeNode[] }
+
 declare module 'claude-code' {
   interface PluginState {
     terry: {
@@ -48,6 +57,16 @@ declare module 'claude-code' {
       gate: GateState
       /** The branches from the default branch down to the checked-out one, by `terry branches`; empty when none. */
       branchChain: string[]
+      /** The file tree by `terry tree`; null until it was read, or when it cannot be read. */
+      tree: TreeSnapshot | null
+      /** Repo-relative paths Claude edited or wrote in this session. */
+      claudeTouched: string[]
+      /** Repo-relative paths of the folders the user collapsed in the file tree. */
+      collapsed: string[]
+      /** Repo-relative paths of the diffs the user approved; a later edit by Claude removes a path. */
+      reviewed: string[]
+      /** The file tree's own scroll place: the index of the first tree row it shows. */
+      treeRow: number
       /** The pane's own scroll place: the index of the first diff row it shows. */
       diffRow: number
       /** How many columns the diff is scrolled to the left; 0 shows each line from its start. */
