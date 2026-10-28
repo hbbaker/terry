@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { buildRows, chunkText, lastColumn, toBlocks } from '../hooks/rows'
+import { MAX_COMMAND_ROWS, buildRows, chunkText, lastColumn, toBlocks } from '../hooks/rows'
 import type { Review } from '../types'
 
 const REVIEW: Review = {
@@ -124,4 +124,55 @@ test('should leave the hunk header and the text of other rows as they are when t
 test('should stop sideways scrolling when only the last columns of the longest line are left', () => {
   expect(lastColumn(buildRows(WIDE, 80))).toBe(60 - 20)
   expect(lastColumn(buildRows({ ...WIDE, sections: [] }, 80))).toBe(0)
+})
+
+function commandRowsOf(command: string, columns = 80): string[] {
+  return buildRows({ ...REVIEW, command }, columns)
+    .filter(row => row.kind === 'command')
+    .map(row => row.text)
+}
+
+test('should show a short command whole', () => {
+  expect(commandRowsOf('git commit -m x')).toEqual(['$ git commit -m x'])
+})
+
+test('should start a row for each line of a command with several lines', () => {
+  expect(commandRowsOf('git commit -F - <<EOF\nfirst\nEOF')).toEqual(['$ git commit -F - <<EOF', 'first', 'EOF'])
+})
+
+test('should cut a long commit message to a few rows and say how many rows it left out', () => {
+  const lines = Array.from({ length: 40 }, (_, index) => `line ${index}`)
+
+  const shown = commandRowsOf(`git commit -F - <<EOF\n${lines.join('\n')}\nEOF`)
+
+  expect(shown).toHaveLength(MAX_COMMAND_ROWS + 1)
+  expect(shown[0]).toBe('$ git commit -F - <<EOF')
+  expect(shown[MAX_COMMAND_ROWS]).toBe('… 39 more rows of the command not shown')
+})
+
+test('should say row, not rows, when the command leaves out one row', () => {
+  const shown = commandRowsOf('a\nb\nc\nd')
+
+  expect(shown.at(-1)).toBe('… 1 more row of the command not shown')
+})
+
+test('should add no note when the command fills the rows exactly', () => {
+  expect(commandRowsOf('a\nb\nc')).toEqual(['$ a', 'b', 'c'])
+})
+
+test('should count the rows of a line wider than the pane toward the cap', () => {
+  const shown = commandRowsOf('x'.repeat(100), 10)
+
+  expect(shown).toHaveLength(MAX_COMMAND_ROWS + 1)
+  expect(shown[MAX_COMMAND_ROWS]).toBe('… 8 more rows of the command not shown')
+})
+
+test('should leave every row under the command as it was when the command is long', () => {
+  const long = Array.from({ length: 40 }, (_, index) => `line ${index}`).join('\n')
+
+  const withLong = buildRows({ ...REVIEW, command: long }, 80)
+  const withShort = buildRows(REVIEW, 80)
+
+  const below = (rows: typeof withLong) => rows.filter(row => row.kind !== 'command')
+  expect(below(withLong)).toEqual(below(withShort))
 })
