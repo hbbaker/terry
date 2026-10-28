@@ -1,14 +1,14 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
-import type { GateState, PaneDecision, Review, ReviewSection, ReviewStage, TreeSnapshot } from '../types'
+import type { DisplaySettings, GateState, PaneDecision, Review, ReviewSection, ReviewStage, TreeSnapshot } from '../types'
 import { TERRY_ALERT, TERRY_CALM, TERRY_SMALL_ALERT, TERRY_SMALL_CALM } from './art'
 import { fitFiles, splitPatch } from './patch'
 import { buildRows, lastColumn, toBlocks } from './rows'
 import type { Row } from './rows'
 import { lastOffset, nextColumn, nextOffset } from './scroll'
+import { DEFAULT_DISPLAY, branchColor, parseDisplay } from './settings'
 import {
-  CLAUDE_COLOR,
   TOP_BAR_ART_GAP,
   activeLine,
   flattenRows,
@@ -25,14 +25,12 @@ const PANE_TITLE = 'Diff review'
 // The file tree pane stays open beside the transcript; the diff pane opens as a second tab.
 const TREE_PANE = 'terry-tree'
 const TREE_TITLE = 'Files'
-// The body columns the tree pane asks for. A request: the person's own width for it wins, and a
-// docked pane is never wider than 45% of the terminal.
-const TREE_PANE_COLUMNS = 34
+// Rows kept above the file Claude is on when the tree scrolls to it.
+const REVEAL_ROWS_ABOVE = 2
 // Blank columns at the left edge of the tree pane.
 const TREE_PADDING = 2
 // Columns of a file row's mark (`✎`, `·`, or none), so the names line up whatever the mark is.
 const TREE_MARK_COLUMNS = 2
-const TREE_PANE_OPEN = { id: TREE_PANE, title: TREE_TITLE, columns: TREE_PANE_COLUMNS } as const
 const TREE_TIMEOUT_MS = 10_000
 // Columns one level of the branch chain moves a line to the right.
 const BRANCH_INDENT = '  '
@@ -69,11 +67,6 @@ const HEADER_ROWS_ANSWERED = 2
 const SIDEWAYS_STEP = 20
 // Columns the pane's text starts in and the width assumed before the first drawing.
 const DEFAULT_PANE_COLUMNS = 80
-// A snowy owl's blue-white; the alert pose takes the theme's warning colour instead.
-const CALM_COLOR = '#8FB8ED'
-// One colour per layer of the branch chain, from the default branch down. Hex, because a theme has
-// no name per layer; picked for a dark background.
-const LAYER_COLORS = ['#8FB8ED', '#9BD39B', '#F2C879', '#E49AD0', '#7FD6D6', '#F29E8E']
 const BRANCH_SEPARATOR = ' -> '
 
 type ManifestSection = { title: string; notes: string[]; lint: string[]; patch_path: string | null }
@@ -89,9 +82,12 @@ const review = atom({ plugin: 'terry', key: 'review' } as const, null)
 const promptReviewFor = atom({ plugin: 'terry', key: 'promptReviewFor' } as const, null)
 const gate = atom({ plugin: 'terry', key: 'gate' } as const, 'unknown')
 const branchChain = atom({ plugin: 'terry', key: 'branchChain' } as const, [])
+// The name, colours and width come from `terry config` (the config file's `display` section).
+const display = atom({ plugin: 'terry', key: 'display' } as const, DEFAULT_DISPLAY)
 const tree = atom({ plugin: 'terry', key: 'tree' } as const, null)
 const claudeTouched = atom({ plugin: 'terry', key: 'claudeTouched' } as const, [])
 const claudeActive = atom({ plugin: 'terry', key: 'claudeActive' } as const, [])
+const claudeLast = atom({ plugin: 'terry', key: 'claudeLast' } as const, null)
 const collapsed = atom({ plugin: 'terry', key: 'collapsed' } as const, [])
 const treeRow = atom({ plugin: 'terry', key: 'treeRow' } as const, 0)
 const diffRow = atom({ plugin: 'terry', key: 'diffRow' } as const, 0)
@@ -253,6 +249,40 @@ async function toggleFolder($: EngineInterface, path: string): Promise<void> {
   await update($, collapsed, paths => (paths.includes(path) ? paths.filter(closed => closed !== path) : [...paths, path]))
 }
 
+/**
+ * What `$.ui.open` is told for the tree pane. The width is a request: the person's own width for
+ * the pane wins, and a docked pane is never wider than 45% of the terminal.
+ */
+function treePaneOpen(settings: DisplaySettings) {
+  return { id: TREE_PANE, title: TREE_TITLE, columns: settings.paneColumns } as const
+}
+
+/** The display settings by `terry config`; null when it cannot be read. */
+async function readDisplay($: EngineInterface): Promise<DisplaySettings | null> {
+  try {
+    const { exitCode, stdout } = await $.process.run(['terry', 'config'], { timeoutMs: GATE_STATUS_TIMEOUT_MS })
+    return exitCode === 0 ? parseDisplay(stdout) : null
+  } catch {
+    // `terry` is not on PATH, or it did not finish in time.
+    return null
+  }
+}
+
+/**
+ * Reads the settings again. Settings that cannot be read leave the last ones in place. A problem
+ * in the config file that was not there before goes to the log, once.
+ */
+async function refreshDisplay($: EngineInterface): Promise<void> {
+  const settings = await readDisplay($)
+  if (settings === null) return
+  const before = await read($, display)
+  if (JSON.stringify(before) === JSON.stringify(settings)) return
+  await update($, display, () => settings)
+  for (const problem of settings.problems) {
+    if (!before.problems.includes(problem)) $.ui.log(`config: ${problem}`)
+  }
+}
+
 /** The repo's file tree by `terry tree`; null when it cannot be read. */
 async function readTree($: EngineInterface): Promise<TreeSnapshot | null> {
   try {
@@ -282,19 +312,49 @@ async function noteClaudeEdit($: EngineInterface, filePath: string): Promise<voi
   await refreshTree($)
 }
 
+// The rows the tree pane's top bar took at its last drawing, and the rows of its body. Only a
+// drawing knows them; `ui.scroll` does not carry the first, and the scroll to a file needs both.
+let treeBarRows = 0
+let treeBodyRows = 0
+
+/**
+ * Scrolls the tree so the file Claude is on shows, when it is out of view. A file in view leaves
+ * the scroll place alone, so a user who scrolls elsewhere is moved only when Claude moves on.
+ */
+async function revealInTree($: EngineInterface, filePath: string): Promise<void> {
+  const snapshot = await read($, tree)
+  const path = snapshot === null ? null : repoPath(snapshot.root, filePath)
+  if (snapshot === null || path === null) return
+  const rows = flattenRows(snapshot.nodes, new Set(await read($, collapsed)))
+  const index = rows.findIndex(row => row.path === path)
+  if (index === -1) return
+  const windowRows = Math.max(1, treeBodyRows - treeBarRows)
+  const first = await read($, treeRow)
+  if (index >= first && index < first + windowRows) return
+  await update($, treeRow, () => Math.min(Math.max(0, index - REVEAL_ROWS_ABOVE), lastOffset(rows.length, windowRows)))
+}
+
 /**
  * Runs an Edit or Write call of Claude's. The file is Claude's, and active, from the moment the
- * call starts (also while it waits for the user's permission) until it ends, even if it fails.
+ * call starts (also while it waits for the user's permission) until it ends, even if it fails; it
+ * stays Claude's colour after that, as the latest file, until another call starts or the turn
+ * ends. The tree scrolls to the file.
  */
 async function whileEditing<T>($: EngineInterface, filePath: string, run: () => Promise<T> | T): Promise<T> {
   const snapshot = await read($, tree)
   const path = snapshot === null ? null : repoPath(snapshot.root, filePath)
-  if (path !== null) await update($, claudeActive, paths => [...paths, path])
+  if (path !== null) {
+    await update($, claudeActive, paths => [...paths, path])
+    await update($, claudeLast, () => path)
+    await revealInTree($, filePath)
+  }
   try {
     return await run()
   } finally {
     if (path !== null) await update($, claudeActive, paths => withoutFirst(paths, path))
     await noteClaudeEdit($, filePath)
+    // A file Claude just created is in the tree only now.
+    await revealInTree($, filePath)
   }
 }
 
@@ -330,6 +390,7 @@ async function refreshBranchChain($: EngineInterface): Promise<void> {
 async function refreshGate($: EngineInterface): Promise<void> {
   const state = await readGateState($)
   await update($, gate, () => state)
+  await refreshDisplay($)
   await refreshBranchChain($)
   await refreshTree($)
 }
@@ -378,27 +439,28 @@ export const register: Register = (on, options) => {
   const scrollRows = scrollRowsFrom(options)
   // The pane's text width at its last drawing; `ui.scroll` does not carry it.
   let paneColumns = DEFAULT_PANE_COLUMNS
-  // The rows the tree pane's top bar took at its last drawing; `ui.scroll` does not carry it.
-  let treeBarRows = 0
-
   on('session.start', async ($, e, next) => {
     // A reload while a call ran leaves its file marked active; nothing is running now.
     await update($, claudeActive, () => [])
+    await update($, claudeLast, () => null)
+    await refreshDisplay($)
+    const settings = await read($, display)
     await $.command.register({
       name: COMMAND,
-      description: 'Open the terry file tree, and show the last diff the gate asked you to approve',
+      description: `Open the ${settings.name} file tree, and show the last diff the gate asked you to approve`,
     })
     await refreshGate($)
     // Opened once, here: a pane the user closes stays closed. /terry opens it again.
-    if ((await read($, gate)) === 'on') await $.ui.open(TREE_PANE_OPEN)
+    if ((await read($, gate)) === 'on') await $.ui.open(treePaneOpen(await read($, display)))
     $.clock.every(GATE_POLL_MS, () => refreshGate($))
     return next(e)
   })
 
   on('command.run', { command: COMMAND }, async $ => {
-    await $.ui.open(TREE_PANE_OPEN)
+    const settings = await read($, display)
+    await $.ui.open(treePaneOpen(settings))
     if ((await read($, review)) === null) {
-      return { text: 'File tree opened. Terry has not reviewed a diff in this session yet.' }
+      return { text: `File tree opened. ${settings.name} has not reviewed a diff in this session yet.` }
     }
     await $.ui.open({ id: PANE, title: PANE_TITLE })
     return { text: 'Diff review pane opened.' }
@@ -453,6 +515,8 @@ export const register: Register = (on, options) => {
   // A prompt cannot be submitted while the turn that holds the command runs; send it after.
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    // The turn is over: Claude is on no file now. A subagent's turn ending does not say so.
+    if (e.agentId === undefined) await update($, claudeLast, () => null)
     const command = e.agentId === undefined ? await read($, promptReviewFor) : null
     if (command !== null) {
       await update($, promptReviewFor, () => null)
@@ -481,7 +545,8 @@ export const register: Register = (on, options) => {
     const { Box, Button, Text, Code } = $.ui.resolve(e)
     const current = await read($, review)
     if (current === null) {
-      return <Text dimColor>No diff yet. Terry shows one here when Claude asks to commit or open a PR.</Text>
+      const { name } = await read($, display)
+      return <Text dimColor>{`No diff yet. ${name} shows one here when Claude asks to commit or open a PR.`}</Text>
     }
 
     paneColumns = e.props.bodyColumns
@@ -575,16 +640,19 @@ export const register: Register = (on, options) => {
   // where the branch last met what is published, so landed commits stay marked until a push.
   on('ui.render', { component: 'Pane', requestId: TREE_PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    if ((await read($, gate)) !== 'on') return <Text dimColor>Terry is off in this folder.</Text>
+    const settings = await read($, display)
+    if ((await read($, gate)) !== 'on') return <Text dimColor>{`${settings.name} is off in this folder.`}</Text>
     const current = await read($, review)
     const holding = isHolding(current)
     const chain = await read($, branchChain)
     const snapshot = await read($, tree)
     const allRows = snapshot === null ? [] : flattenRows(snapshot.nodes)
     const changedCount = allRows.filter(row => !row.isDir && row.status !== 'clean').length
-    const activePaths = await read($, claudeActive)
+    const lastPath = await read($, claudeLast)
+    const activePaths = [...new Set([...(await read($, claudeActive)), ...(lastPath === null ? [] : [lastPath])])]
     const editing = activeLine(activePaths)
     const marks: TreeMarks = {
+      palette: settings.colors,
       hasChanges: changedCount > 0,
       collapsed: new Set(await read($, collapsed)),
       claudeTouched: new Set(await read($, claudeTouched)),
@@ -602,6 +670,7 @@ export const register: Register = (on, options) => {
       bodyRows: e.props.scroll.bodyRows,
     })
     treeBarRows = bar.rows
+    treeBodyRows = e.props.scroll.bodyRows
 
     const rows = snapshot === null ? [] : flattenRows(snapshot.nodes, marks.collapsed)
     const windowRows = Math.max(1, e.props.scroll.bodyRows - bar.rows)
@@ -611,7 +680,7 @@ export const register: Register = (on, options) => {
     const owl = bar.hasArt && (
       <Box flexDirection="column" flexShrink={0} marginRight={bar.isBeside ? TOP_BAR_ART_GAP : 0}>
         {art.map(line => (
-          <Text color={holding ? 'warning' : CALM_COLOR} wrap="truncate-end">
+          <Text color={holding ? settings.colors.alert : settings.colors.owl} wrap="truncate-end">
             {line}
           </Text>
         ))}
@@ -621,12 +690,12 @@ export const register: Register = (on, options) => {
     const words = (
       <Box flexDirection="column" flexShrink={1}>
         {holding ? (
-          <Text bold color="warning" wrap="truncate-end">
-            Terry holds a command
+          <Text bold color={settings.colors.alert} wrap="truncate-end">
+            {`${settings.name} holds a command`}
           </Text>
         ) : (
-          <Text bold color={CALM_COLOR} wrap="truncate-end">
-            Terry is watching
+          <Text bold color={settings.colors.owl} wrap="truncate-end">
+            {`${settings.name} is watching`}
           </Text>
         )}
         {holding && (
@@ -636,12 +705,12 @@ export const register: Register = (on, options) => {
         )}
         {/* One branch a line, each one level further in: the pane is too narrow for a row of them. */}
         {chain.map((branch, depth) => (
-          <Text bold={depth === chain.length - 1} color={LAYER_COLORS[depth % LAYER_COLORS.length]} wrap="truncate-end">
+          <Text bold={depth === chain.length - 1} color={branchColor(settings.colors, depth)} wrap="truncate-end">
             {depth === 0 ? branch : `${BRANCH_INDENT.repeat(depth - 1)}↳ ${branch}`}
           </Text>
         ))}
         {editing !== null && (
-          <Text bold color={CLAUDE_COLOR} wrap="truncate-end">
+          <Text bold color={settings.colors.claude} wrap="truncate-end">
             {`✎ ${editing}`}
           </Text>
         )}
@@ -737,6 +806,7 @@ export const register: Register = (on, options) => {
     const current = await read($, review)
     const holding = isHolding(current)
     const chain = await read($, branchChain)
+    const settings = await read($, display)
 
     // The branches from the default branch down, one colour per layer; the checked-out one is bold.
     const branches =
@@ -745,7 +815,7 @@ export const register: Register = (on, options) => {
           {chain.map((branch, depth) => (
             <Box flexDirection="row">
               {depth > 0 && <Text dimColor>{BRANCH_SEPARATOR}</Text>}
-              <Text bold={depth === chain.length - 1} color={LAYER_COLORS[depth % LAYER_COLORS.length]} wrap="truncate-end">
+              <Text bold={depth === chain.length - 1} color={branchColor(settings.colors, depth)} wrap="truncate-end">
                 {branch}
               </Text>
             </Box>
@@ -755,8 +825,8 @@ export const register: Register = (on, options) => {
 
     const words = holding ? (
       <Box flexDirection="column">
-        <Text bold color="warning">
-          Terry holds a command for your review
+        <Text bold color={settings.colors.alert}>
+          {`${settings.name} holds a command for your review`}
         </Text>
         <Text dimColor wrap="truncate-end">
           $ {current.command}
@@ -766,8 +836,8 @@ export const register: Register = (on, options) => {
       </Box>
     ) : (
       <Box flexDirection="column">
-        <Text bold color={CALM_COLOR}>
-          Terry is watching
+        <Text bold color={settings.colors.owl}>
+          {`${settings.name} is watching`}
         </Text>
         <Text dimColor>Commits and PRs wait for your review.</Text>
         {branches}
@@ -785,7 +855,7 @@ export const register: Register = (on, options) => {
         {/* Fixed width and no shrinking: the pane docking narrows the band, and a shrunk owl wraps. */}
         <Box flexDirection="column" marginRight={BAND_ART_GAP} flexShrink={0} width={artColumns}>
           {art.map(line => (
-            <Text color={holding ? 'warning' : CALM_COLOR} wrap="truncate-end">
+            <Text color={holding ? settings.colors.alert : settings.colors.owl} wrap="truncate-end">
               {line}
             </Text>
           ))}

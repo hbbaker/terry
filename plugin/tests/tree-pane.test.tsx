@@ -2,6 +2,8 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { ProcessRunResult } from 'claude-code'
 import type { TestBody } from 'claude-code/testing'
 
+import { DEFAULT_DISPLAY } from '../hooks/settings'
+
 const HOME = '/home/tester'
 
 const TREE_PANE = {
@@ -67,6 +69,11 @@ const CLEAN_TREE: ProcessRunResult = {
 }
 const BRANCHES: ProcessRunResult = { ...ON, stdout: 'main\ndev\n' }
 
+/** What `terry config` answers for these display settings. */
+function configOf(change: Record<string, unknown> = {}): ProcessRunResult {
+  return { ...ON, stdout: JSON.stringify({ ...DEFAULT_DISPLAY, ...change }) }
+}
+
 type SessionOptions = {
   /** What `terry status` answers. */
   status?: ProcessRunResult
@@ -78,11 +85,15 @@ type SessionOptions = {
   tree?: ProcessRunResult
   /** The core of `tool.call` waits for this before it answers: a call that is still running. */
   hold?: Promise<void>
+  /** What `terry config` answers. */
+  config?: ProcessRunResult
+  /** Collects every line the plugin writes to the log. */
+  logs?: string[]
 }
 
 /** Starts the session with the files of a repo on `dev`. */
 async function startSession(
-  ...[$, on, { status = ON, panes = [], opened = [], tree = TREE, hold = Promise.resolve() } = {}]: [
+  ...[$, on, { status = ON, panes = [], opened = [], tree = TREE, hold = Promise.resolve(), config = configOf(), logs = [] } = {}]: [
     ...Parameters<TestBody>,
     SessionOptions?,
   ]
@@ -92,6 +103,8 @@ async function startSession(
   on('command.register', () => ({ value: { command: 'terry' } }))
   on('ui.open', (_, e) => (opened.push(`${e.id}:${e.columns ?? ''}`), { value: { isPlaced: true } }))
   on('ui.panes', () => ({ value: panes }))
+  on('ui.log', (_, e) => (logs.push(e.text), { value: undefined }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
   // The engine's own band, drawn when the plugin passes: an empty box.
   on('ui.render', ($, e) => {
     const { Box } = $.ui.resolve(e)
@@ -100,6 +113,7 @@ async function startSession(
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('process.run', (_, e) => {
     if (e.argv.includes('tree')) return { value: tree }
+    if (e.argv.includes('config')) return { value: config }
     return { value: e.argv.includes('branches') ? BRANCHES : status }
   })
   on('tool.call', async () => {
@@ -177,7 +191,7 @@ test('should say how many files changed and what they changed since', async ($, 
   await pane.unmount()
 })
 
-test('should mark a file as Claude edited when Claude edits it', async ($, on) => {
+test('should keep the file in the Claude colour with an orange mark after the call, until the turn ends', async ($, on) => {
   await startSession($, on)
 
   await $.tool.call({
@@ -188,13 +202,19 @@ test('should mark a file as Claude edited when Claude edits it', async ($, on) =
     new_string: 'b',
   })
 
-  const pane = await $.ui.mount(TREE_PANE)
-  expect((await pane.find({ type: 'Text', text: '✎' }))?.props.color).toBe('claude')
-  expect((await pane.find({ type: 'Text', text: /main\.rs/ }))?.props.color).toBe('warning')
-  await pane.unmount()
+  const during = await $.ui.mount(TREE_PANE)
+  expect((await during.find({ type: 'Text', text: '✎' }))?.props.color).toBe('claude')
+  expect((await during.find({ type: 'Text', text: /main\.rs/ }))?.props.color).toBe('claude')
+  await during.unmount()
+
+  await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 'turn_01' })
+  const after = await $.ui.mount(TREE_PANE)
+  expect((await after.find({ type: 'Text', text: '✎' }))?.props.color).toBe('claude')
+  expect((await after.find({ type: 'Text', text: /main\.rs/ }))?.props.color).toBe('warning')
+  await after.unmount()
 })
 
-test('should show the file in the Claude colour while an Edit call runs, and keep the mark after', async ($, on) => {
+test('should show the file in the Claude colour while an Edit call runs, and in the top bar', async ($, on) => {
   let finish = () => {}
   const hold = new Promise<void>(resolve => (finish = resolve))
   const clock = await startSession($, on, { hold })
@@ -215,15 +235,14 @@ test('should show the file in the Claude colour while an Edit call runs, and kee
 
   finish()
   await call
+  await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 'turn_01' })
   const after = await $.ui.mount(TREE_PANE)
 
-  expect((await after.find({ type: 'Text', text: /main\.rs/ }))?.props.color).toBe('warning')
-  expect((await after.find({ type: 'Text', text: '✎' }))?.props.color).toBe('claude')
   expect(await after.find({ type: 'Text', text: /Claude is editing/ })).toBeUndefined()
   await after.unmount()
 })
 
-test('should stop showing the file as edited when the Edit call fails', async ($, on) => {
+test('should stop showing the file as edited when the turn ends, also after a failed call', async ($, on) => {
   const hold = Promise.reject(new Error('the call failed'))
   hold.catch(() => undefined)
   const clock = await startSession($, on, { hold })
@@ -238,6 +257,7 @@ test('should stop showing the file as edited when the Edit call fails', async ($
     })
     .catch(() => undefined)
   await clock.advance(10)
+  await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 'turn_01' })
 
   const pane = await $.ui.mount(TREE_PANE)
   expect(await pane.find({ type: 'Text', text: /Claude is editing/ })).toBeUndefined()
@@ -370,5 +390,165 @@ test('should draw terry above his words when the pane is narrow', async ($, on) 
 
   expect(JSON.stringify(await pane.drawn())).not.toContain('"alignItems":"center"')
   expect(await pane.find({ type: 'Text', text: /◠▾◠/ })).toBeDefined()
+  await pane.unmount()
+})
+
+test('should call terry by the name in the settings in the pane', async ($, on) => {
+  await startSession($, on, { config: configOf({ name: 'Hedwig' }) })
+
+  const pane = await $.ui.mount(TREE_PANE)
+
+  expect(await pane.find({ type: 'Text', text: 'Hedwig is watching' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /Terry/ })).toBeUndefined()
+  await pane.unmount()
+})
+
+test('should call terry by the name in the settings in the band', async ($, on) => {
+  await startSession($, on, { config: configOf({ name: 'Hedwig' }) })
+
+  const band = await $.ui.mount(BAND)
+
+  expect(await band.find({ type: 'Text', text: 'Hedwig is watching' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /Terry/ })).toBeUndefined()
+  await band.unmount()
+})
+
+test('should say the name in the settings when the folder is excluded', async ($, on) => {
+  await startSession($, on, { status: OFF, config: configOf({ name: 'Hedwig' }) })
+
+  const pane = await $.ui.mount(TREE_PANE)
+
+  expect(await pane.find({ type: 'Text', text: 'Hedwig is off in this folder.' })).toBeDefined()
+  await pane.unmount()
+})
+
+test('should draw a changed file in the colour from the settings', async ($, on) => {
+  const colors = { ...DEFAULT_DISPLAY.colors, modified: '#ABCDEF' }
+  await startSession($, on, { config: configOf({ colors }) })
+
+  const pane = await $.ui.mount(TREE_PANE)
+
+  expect((await pane.find({ type: 'Text', text: /main\.rs/ }))?.props.color).toBe('#ABCDEF')
+  await pane.unmount()
+})
+
+test('should draw the owl, his line and the branches in the colours from the settings', async ($, on) => {
+  const colors = { ...DEFAULT_DISPLAY.colors, owl: '#112233', branches: ['#445566', '#778899'] }
+  await startSession($, on, { config: configOf({ colors }) })
+
+  const pane = await $.ui.mount(TREE_PANE)
+
+  expect((await pane.find({ type: 'Text', text: 'Terry is watching' }))?.props.color).toBe('#112233')
+  expect((await pane.find({ type: 'Text', text: /◠▾◠/ }))?.props.color).toBe('#112233')
+  expect((await pane.find({ type: 'Text', text: 'main' }))?.props.color).toBe('#445566')
+  expect((await pane.find({ type: 'Text', text: '↳ dev' }))?.props.color).toBe('#778899')
+  await pane.unmount()
+})
+
+test('should ask for the width in the settings when it opens the tree pane', async ($, on) => {
+  const opened: string[] = []
+  await startSession($, on, { opened, config: configOf({ paneColumns: 40 }) })
+
+  expect(opened).toContain('terry-tree:40')
+})
+
+test('should use the default look when terry config fails', async ($, on) => {
+  const opened: string[] = []
+  await startSession($, on, { opened, config: { ...ON, exitCode: 2, stdout: 'usage: terry ...' } })
+
+  const pane = await $.ui.mount(TREE_PANE)
+
+  expect(await pane.find({ type: 'Text', text: 'Terry is watching' })).toBeDefined()
+  expect(opened).toContain('terry-tree:34')
+  await pane.unmount()
+})
+
+test('should log a problem in the config file once, not at every poll', async ($, on) => {
+  const logs: string[] = []
+  const config = configOf({ problems: ['display.name: must be 1 to 24 characters, not 30; using the default'] })
+  const clock = await startSession($, on, { logs, config })
+
+  await clock.advance(15_000)
+  await clock.advance(15_000)
+
+  expect(logs.filter(line => line.startsWith('config: display.name'))).toHaveLength(1)
+})
+
+const TWO_FILES: ProcessRunResult = {
+  ...ON,
+  stdout: JSON.stringify({
+    root: '/work',
+    branch: 'dev',
+    since: 'origin/dev',
+    tree: [
+      { file: 'a.rs', status: 'modified', landed: false },
+      { file: 'b.rs', status: 'modified', landed: false },
+    ],
+  }),
+}
+
+async function edit($: Parameters<TestBody>[0], file: string): Promise<void> {
+  await $.tool.call({ tool: 'Edit', tool_use_id: `toolu_${file}`, file_path: `/work/${file}`, old_string: 'a', new_string: 'b' })
+}
+
+test('should move the Claude colour to the next file when Claude starts another edit', async ($, on) => {
+  await startSession($, on, { tree: TWO_FILES })
+
+  await edit($, 'a.rs')
+  await edit($, 'b.rs')
+
+  const pane = await $.ui.mount(TREE_PANE)
+  expect((await pane.find({ type: 'Text', text: /b\.rs/ }))?.props.color).toBe('claude')
+  expect((await pane.find({ type: 'Text', text: /a\.rs/ }))?.props.color).toBe('warning')
+  expect(await pane.find({ type: 'Text', text: '✎ Claude is editing b.rs' })).toBeDefined()
+  expect((await pane.find({ type: 'Text', text: /^✎$/ }))?.props.color).toBe('claude')
+  await pane.unmount()
+})
+
+test('should keep the file in the Claude colour when only a subagent turn ends', async ($, on) => {
+  await startSession($, on)
+  await edit($, 'src/main.rs')
+
+  await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 'turn_02', agentId: 'sub_1' })
+
+  const pane = await $.ui.mount(TREE_PANE)
+  expect((await pane.find({ type: 'Text', text: /main\.rs/ }))?.props.color).toBe('claude')
+  await pane.unmount()
+})
+
+test('should scroll the tree to the file Claude edits when it is out of view', async ($, on) => {
+  const many = Array.from({ length: 40 }, (_, index) => ({
+    file: `file-${String(index).padStart(2, '0')}.rs`,
+    status: 'clean',
+    landed: false,
+  }))
+  await startSession($, on, {
+    tree: { ...TREE, stdout: JSON.stringify({ root: '/work', branch: 'dev', since: 'origin/dev', tree: many }) },
+  })
+  const pane = await $.ui.mount({ ...TREE_PANE, props: { ...TREE_PANE.props, scroll: { offset: 0, bodyRows: 20 } } })
+  expect(await pane.find({ type: 'Text', text: /file-00\.rs/ })).toBeDefined()
+
+  await edit($, 'file-30.rs')
+
+  expect((await pane.find({ type: 'Text', text: /file-30\.rs/ }))?.props.color).toBe('claude')
+  expect(await pane.find({ type: 'Text', text: /file-00\.rs/ })).toBeUndefined()
+  await pane.unmount()
+})
+
+test('should leave the scroll place alone when the file Claude edits is in view', async ($, on) => {
+  const many = Array.from({ length: 40 }, (_, index) => ({
+    file: `file-${String(index).padStart(2, '0')}.rs`,
+    status: 'clean',
+    landed: false,
+  }))
+  await startSession($, on, {
+    tree: { ...TREE, stdout: JSON.stringify({ root: '/work', branch: 'dev', since: 'origin/dev', tree: many }) },
+  })
+  const pane = await $.ui.mount({ ...TREE_PANE, props: { ...TREE_PANE.props, scroll: { offset: 0, bodyRows: 20 } } })
+
+  await edit($, 'file-03.rs')
+
+  expect(await pane.find({ type: 'Text', text: /file-00\.rs/ })).toBeDefined()
+  expect((await pane.find({ type: 'Text', text: /file-03\.rs/ }))?.props.color).toBe('claude')
   await pane.unmount()
 })
