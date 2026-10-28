@@ -212,7 +212,7 @@ pub fn branch_chain(repo: &Path) -> Vec<String> {
 }
 
 /// The default branch, when a local branch of that name exists.
-fn default_branch(repo: &Path) -> Option<String> {
+pub(crate) fn default_branch(repo: &Path) -> Option<String> {
     let from_remote = default_base_ref(repo, DEFAULT_REMOTE)
         .ok()
         .and_then(|base| {

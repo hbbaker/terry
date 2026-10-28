@@ -18,10 +18,14 @@ pull request**, terry stops the command and shows you the diff before anything r
   layer. In a terminal too narrow for the pane, a band above the prompt shows it instead.
 - **File tree.** A "Files" pane stays open beside the chat with terry's owl, the branch chain
   and every file of the repo (tracked files, and untracked ones that `.gitignore` does not
-  hide). Before terry has reviewed a diff the tree is plain. After that, changed files take the
-  colour of their status (green added, yellow modified, red deleted, cyan untracked) and a
-  letter at the end of the row (`A`, `M`, `D`, `?`), a `✎` marks a file Claude edited and a `·` a
-  file you changed, and a file is bold until you approve its diff. A small Terry sits in a bar
+  hide). Changed files take the colour of their status (green added, yellow modified, red
+  deleted, cyan untracked) and a letter right after the name (`A`, `M`, `D`, `?`), and a `✎`
+  marks a file Claude edited and a `·` a file you changed. A file Claude is editing right now
+  turns orange, and the top bar names it. The colours count every change since
+  the branch last met what is published (its upstream, else `origin`'s default branch), so
+  commits that landed stay marked until you push or open a PR. A file is bold while its change
+  is not committed, and dim once a commit holds it; two commits on one file read as one change.
+  In a repo where nothing changed since then, the tree is plain. A small Terry sits in a bar
   at the top of the pane, with the branch chain and a count of changed files; the bar stays in
   place while the tree scrolls under it. Click a folder to close or open it (or Tab to it and
   press Enter); a closed folder shows how many changed files it hides. The "Diff review" pane
@@ -134,8 +138,8 @@ A change in `/config` reloads the plugin at once. After you edit `settings.json`
   Claude's edits to it go to the permission prompt, and a commit that changes it carries a note.
 - **Read the full patch in a terminal:** `delta < <patch path>`. The prompt shows the path.
 - **See the files:** look at the "Files" pane. `terry tree` prints the same data as JSON: the
-  repo root, the branch, and the files nested in folders, each with its status against the last
-  commit.
+  repo root, the branch, the ref the changes count from (`since`), and the files nested in
+  folders, each with its status against that point and whether a commit landed it.
 - **Open the panes again:** `/terry` opens the "Files" pane, and the "Diff review" pane too when
   a diff was reviewed.
 - **Approve or reject with the keyboard:** the pane takes the keys when it opens (unless you
@@ -151,6 +155,25 @@ A change in `/config` reloads the plugin at once. After you edit `settings.json`
   (for example, the plugin does not run in that host), set `DIFF_GATE_PANE_REVIEW=0` for that
   host. Claude cannot skip the pane step itself.
 - **A fallback ESLint rule gets in the way:** turn it off in `lint/eslint.config.mjs`.
+
+### Reading the file tree
+
+| You see | It means |
+| --- | --- |
+| `▾ src/` or `▸ src/` | An open or a closed folder. A click (or Tab and Enter) toggles it. A number after a closed folder is how many changed files it hides. |
+| `✎` in orange | Claude's Edit or Write tool changed this file in this session. |
+| Name in orange and bold | Claude is editing this file right now. It starts with the call, also while the call waits for your permission, and ends with the call. |
+| `✎ Claude is editing x.rs` in the top bar | The same, in the top bar; `+2` means two more files. |
+| `·` | The change is not from Claude's Edit or Write: you made it, or a command Claude ran (`sed`, a script). |
+| Yellow, green, red, cyan name | Modified, added, deleted, untracked. |
+| `M`, `A`, `D`, `?` right after the name | The same status, as a letter. |
+| Bold | The change is not committed yet. |
+| Dim | A commit holds the change (dim yellow reads as grey), or the file did not change. |
+
+A file with several signs reads left to right: the mark says who, the colour says what happened,
+bold or dim says whether it is committed. The orange `✎` stays on a file after Claude's call ends,
+and its name goes back to its status colour. "Right now" covers Edit and Write only; a file that
+Claude creates has no row until the call ends, so only the top bar names it.
 
 ## Limits
 
@@ -170,10 +193,12 @@ A change in `/config` reloads the plugin at once. After you edit `settings.json`
   have opened one with `/terry`); in a narrower one, run `/terry`. Claude Code docks a pane at
   most 45% of the width wide, and shows two open panes as tabs, not side by side: while you
   review a diff you see the diff, and the file tree is one tab away.
-- The tree colours come from `git status`, so a file changed outside Claude Code shows after the
-  next Bash, Edit or Write call, or within 15 seconds. "Claude edited" counts only Edit and
-  Write calls; a change made by a command Claude runs shows as yours. A file you change after
-  you approved its diff stays dim.
+- The tree colours come from `git diff` against the point where the branch last met what is
+  published, so a push or a PR clears them (after the next Bash, Edit or Write call, or within 15
+  seconds, also for a push from another terminal). A `git pull` moves that point too, so pulled
+  changes are not marked. A file changed outside Claude Code shows after the same delay.
+  "Claude edited" counts only Edit and Write calls; a change made by a command Claude runs
+  shows as yours.
 - `terry tree` lists every file, and the plugin reads the whole answer. A very large repo can
   give more output than the plugin reads, and the tree then keeps its last good state.
 - The pane draws up to about 90,000 characters of diff; past that, it lists how many files

@@ -16,6 +16,8 @@ const STATUS_BADGES: Record<Exclude<TreeStatus, 'clean'>, string> = {
   deleted: 'D',
   untracked: '?',
 }
+// Claude's own colour in the theme (orange), for everything that shows Claude at work.
+export const CLAUDE_COLOR = 'claude'
 // The owl's blue-white, kept for the folders.
 const FOLDER_COLOR = '#8FB8ED'
 // Before a name: a folder's mark, who changed a file, or blanks that keep the names in line.
@@ -39,27 +41,36 @@ export type TreeRow = {
   guide: string
   isDir: boolean
   status: TreeStatus
+  /** True for a file that a commit since the base changed, with nothing newer uncommitted. */
+  landed: boolean
   /** For a folder, how many changed files it holds at any depth; 0 for a file. */
   changedBelow: number
 }
 
 export type RowStyle = { bold?: boolean; color?: string; dimColor?: boolean }
 
-/** How a row is drawn: the glyph before its name, its text style, and the badge at its end. */
-export type RowLook = { glyph: string; style: RowStyle; badge: string; badgeColor?: string }
+/**
+ * How a row is drawn: the glyph before its name (in `glyphColor` when it has one, else in the
+ * name's style), the name's text style, and the badge after the name.
+ */
+export type RowLook = { glyph: string; glyphColor?: string; style: RowStyle; badge: string; badgeColor?: string }
 
-/** What the rows need: whether a diff was reviewed yet, who touched which file, and which folders are closed. */
+/** What the rows need: whether any file changed, who touched which file, and which folders are closed. */
 export type TreeMarks = {
-  hasReviewed: boolean
+  hasChanges: boolean
   collapsed: ReadonlySet<string>
+  /** Files Claude's Edit or Write changed in this session. */
   claudeTouched: ReadonlySet<string>
-  reviewed: ReadonlySet<string>
+  /** Files an Edit or Write call of Claude's is on right now. */
+  claudeActive: ReadonlySet<string>
 }
 
 function isNode(value: unknown): value is TreeNode {
   if (typeof value !== 'object' || value === null) return false
   const node = value as Record<string, unknown>
-  if (typeof node['file'] === 'string') return typeof node['status'] === 'string' && TREE_STATUSES.includes(node['status'])
+  if (typeof node['file'] === 'string') {
+    return typeof node['status'] === 'string' && TREE_STATUSES.includes(node['status']) && typeof node['landed'] === 'boolean'
+  }
   return typeof node['dir'] === 'string' && Array.isArray(node['children']) && node['children'].every(isNode)
 }
 
@@ -72,9 +83,10 @@ export function parseTree(text: string): TreeSnapshot | null {
     return null
   }
   if (typeof parsed !== 'object' || parsed === null) return null
-  const { root, branch, tree } = parsed as Record<string, unknown>
-  if (typeof root !== 'string' || typeof branch !== 'string' || !Array.isArray(tree) || !tree.every(isNode)) return null
-  return { root, branch, nodes: tree }
+  const { root, branch, since, tree } = parsed as Record<string, unknown>
+  if (typeof root !== 'string' || typeof branch !== 'string' || typeof since !== 'string') return null
+  if (!Array.isArray(tree) || !tree.every(isNode)) return null
+  return { root, branch, since, nodes: tree }
 }
 
 /** How many changed files `nodes` hold, at any depth. */
@@ -102,11 +114,12 @@ export function flattenRows(
     const guide = `${indent}${isLast ? GUIDE_LAST : GUIDE_MIDDLE}`
     if ('file' in node) {
       const path = `${parent}${node.file}`
-      return [{ path, name: node.file, depth, guide, isDir: false, status: node.status, changedBelow: 0 }]
+      const landed = node.landed
+      return [{ path, name: node.file, depth, guide, isDir: false, status: node.status, landed, changedBelow: 0 }]
     }
     const path = `${parent}${node.dir}`
     const changedBelow = countChanged(node.children)
-    const folder: TreeRow = { path, name: node.dir, depth, guide, isDir: true, status: 'clean', changedBelow }
+    const folder: TreeRow = { path, name: node.dir, depth, guide, isDir: true, status: 'clean', landed: false, changedBelow }
     if (collapsed.has(path)) return [folder]
     const below = `${indent}${isLast ? GUIDE_BLANK : GUIDE_PASS}`
     return [folder, ...flattenRows(node.children, collapsed, `${path}/`, depth + 1, below)]
@@ -120,25 +133,50 @@ export function repoPath(root: string, filePath: string): string | null {
 }
 
 /**
- * A folder shows whether it is open, and, closed, how many changed files it hides. Before any
- * diff was reviewed the files are plain. After that, a changed file takes its status
- * colour, a letter for the status, and a glyph for who changed it; it is bold until the user
- * approved its diff, then dim.
+ * A folder shows whether it is open, and, closed, how many changed files it hides.
+ *
+ * A file Claude is editing right now, changed or not yet, takes Claude's colour in bold. A file
+ * Claude changed in this session keeps a `✎` in Claude's colour. Otherwise a changed file takes
+ * its status colour, a letter for the status, and a `·` for a change that is not Claude's; it is
+ * bold until it is committed, then dim. Unchanged files are dim while something else changed,
+ * and plain in a tree where nothing did.
  */
 export function rowLook(row: TreeRow, marks: TreeMarks): RowLook {
   if (row.isDir) {
     const isClosed = marks.collapsed.has(row.path)
     const style = { bold: true, color: FOLDER_COLOR }
     const glyph = isClosed ? GLYPH_FOLDER_CLOSED : GLYPH_FOLDER_OPEN
-    if (!isClosed || !marks.hasReviewed || row.changedBelow === 0) return { glyph, style, badge: '' }
+    if (!isClosed || row.changedBelow === 0) return { glyph, style, badge: '' }
     return { glyph, style, badge: String(row.changedBelow), badgeColor: STATUS_COLORS.modified }
   }
-  if (!marks.hasReviewed) return { glyph: GLYPH_NONE, style: {}, badge: '' }
-  if (row.status === 'clean') return { glyph: GLYPH_NONE, style: { dimColor: true }, badge: '' }
-  const glyph = marks.claudeTouched.has(row.path) ? GLYPH_CLAUDE : GLYPH_USER
-  const isReviewed = marks.reviewed.has(row.path)
-  const style = { color: STATUS_COLORS[row.status], bold: !isReviewed, dimColor: isReviewed }
-  return { glyph, style, badge: STATUS_BADGES[row.status], badgeColor: STATUS_COLORS[row.status] }
+  const isActive = marks.claudeActive.has(row.path)
+  if (row.status === 'clean') {
+    if (isActive) return { glyph: GLYPH_CLAUDE, glyphColor: CLAUDE_COLOR, style: { color: CLAUDE_COLOR, bold: true }, badge: '' }
+    return { glyph: GLYPH_NONE, style: marks.hasChanges ? { dimColor: true } : {}, badge: '' }
+  }
+  const isClaude = isActive || marks.claudeTouched.has(row.path)
+  const statusStyle = { color: STATUS_COLORS[row.status], bold: !row.landed, dimColor: row.landed }
+  return {
+    glyph: isClaude ? GLYPH_CLAUDE : GLYPH_USER,
+    ...(isClaude ? { glyphColor: CLAUDE_COLOR } : {}),
+    style: isActive ? { color: CLAUDE_COLOR, bold: true } : statusStyle,
+    badge: STATUS_BADGES[row.status],
+    badgeColor: STATUS_COLORS[row.status],
+  }
+}
+
+/** The top bar's line about what Claude is editing; null when it is editing nothing. */
+export function activeLine(paths: readonly string[]): string | null {
+  const names = [...new Set(paths.map(path => path.split('/').pop() ?? path))]
+  const [first, ...others] = names
+  if (first === undefined) return null
+  return others.length === 0 ? `Claude is editing ${first}` : `Claude is editing ${first} +${others.length}`
+}
+
+/** `paths` without its first `path`: two calls on one file end one at a time. */
+export function withoutFirst(paths: readonly string[], path: string): string[] {
+  const index = paths.indexOf(path)
+  return index === -1 ? [...paths] : [...paths.slice(0, index), ...paths.slice(index + 1)]
 }
 
 // Columns between the owl and his words, and the fewest the words need beside the owl.
