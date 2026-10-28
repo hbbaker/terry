@@ -7,6 +7,7 @@
 pub mod approvals;
 pub mod config;
 pub mod diff;
+pub mod display;
 pub mod gate_bash;
 pub mod gate_edit;
 pub mod git;

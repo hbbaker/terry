@@ -1,14 +1,6 @@
-import type { TreeNode, TreeSnapshot, TreeStatus } from '../types'
+import type { Palette, TreeNode, TreeSnapshot, TreeStatus } from '../types'
 
 const TREE_STATUSES: readonly string[] = ['clean', 'added', 'modified', 'deleted', 'untracked']
-// Hex for the one status that has no theme name.
-const UNTRACKED_COLOR = '#7FD6D6'
-const STATUS_COLORS: Record<Exclude<TreeStatus, 'clean'>, string> = {
-  added: 'success',
-  modified: 'warning',
-  deleted: 'error',
-  untracked: UNTRACKED_COLOR,
-}
 // After the status colour, the letter that says it at the right edge of a row.
 const STATUS_BADGES: Record<Exclude<TreeStatus, 'clean'>, string> = {
   added: 'A',
@@ -16,10 +8,6 @@ const STATUS_BADGES: Record<Exclude<TreeStatus, 'clean'>, string> = {
   deleted: 'D',
   untracked: '?',
 }
-// Claude's own colour in the theme (orange), for everything that shows Claude at work.
-export const CLAUDE_COLOR = 'claude'
-// The owl's blue-white, kept for the folders.
-const FOLDER_COLOR = '#8FB8ED'
 // Before a name: a folder's mark, who changed a file, or blanks that keep the names in line.
 const GLYPH_FOLDER_OPEN = '▾ '
 const GLYPH_FOLDER_CLOSED = '▸ '
@@ -55,8 +43,9 @@ export type RowStyle = { bold?: boolean; color?: string; dimColor?: boolean }
  */
 export type RowLook = { glyph: string; glyphColor?: string; style: RowStyle; badge: string; badgeColor?: string }
 
-/** What the rows need: whether any file changed, who touched which file, and which folders are closed. */
+/** What the rows need: the colours, whether any file changed, who touched which file, and which folders are closed. */
 export type TreeMarks = {
+  palette: Palette
   hasChanges: boolean
   collapsed: ReadonlySet<string>
   /** Files Claude's Edit or Write changed in this session. */
@@ -144,24 +133,26 @@ export function repoPath(root: string, filePath: string): string | null {
 export function rowLook(row: TreeRow, marks: TreeMarks): RowLook {
   if (row.isDir) {
     const isClosed = marks.collapsed.has(row.path)
-    const style = { bold: true, color: FOLDER_COLOR }
+    const style = { bold: true, color: marks.palette.folder }
     const glyph = isClosed ? GLYPH_FOLDER_CLOSED : GLYPH_FOLDER_OPEN
     if (!isClosed || row.changedBelow === 0) return { glyph, style, badge: '' }
-    return { glyph, style, badge: String(row.changedBelow), badgeColor: STATUS_COLORS.modified }
+    return { glyph, style, badge: String(row.changedBelow), badgeColor: marks.palette.modified }
   }
   const isActive = marks.claudeActive.has(row.path)
   if (row.status === 'clean') {
-    if (isActive) return { glyph: GLYPH_CLAUDE, glyphColor: CLAUDE_COLOR, style: { color: CLAUDE_COLOR, bold: true }, badge: '' }
+    if (isActive) {
+      return { glyph: GLYPH_CLAUDE, glyphColor: marks.palette.claude, style: { color: marks.palette.claude, bold: true }, badge: '' }
+    }
     return { glyph: GLYPH_NONE, style: marks.hasChanges ? { dimColor: true } : {}, badge: '' }
   }
   const isClaude = isActive || marks.claudeTouched.has(row.path)
-  const statusStyle = { color: STATUS_COLORS[row.status], bold: !row.landed, dimColor: row.landed }
+  const statusStyle = { color: marks.palette[row.status], bold: !row.landed, dimColor: row.landed }
   return {
     glyph: isClaude ? GLYPH_CLAUDE : GLYPH_USER,
-    ...(isClaude ? { glyphColor: CLAUDE_COLOR } : {}),
-    style: isActive ? { color: CLAUDE_COLOR, bold: true } : statusStyle,
+    ...(isClaude ? { glyphColor: marks.palette.claude } : {}),
+    style: isActive ? { color: marks.palette.claude, bold: true } : statusStyle,
     badge: STATUS_BADGES[row.status],
-    badgeColor: STATUS_COLORS[row.status],
+    badgeColor: marks.palette[row.status],
   }
 }
 
