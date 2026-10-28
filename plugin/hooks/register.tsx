@@ -1,15 +1,29 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
-import type { GateState, PaneDecision, Review, ReviewSection, ReviewStage } from '../types'
-import { TERRY_ALERT, TERRY_CALM } from './art'
+import type { GateState, PaneDecision, Review, ReviewSection, ReviewStage, TreeSnapshot } from '../types'
+import { TERRY_ALERT, TERRY_CALM, TERRY_SMALL_ALERT, TERRY_SMALL_CALM } from './art'
 import { fitFiles, splitPatch } from './patch'
 import { buildRows, lastColumn, toBlocks } from './rows'
 import type { Row } from './rows'
 import { lastOffset, nextColumn, nextOffset } from './scroll'
+import { TOP_BAR_ART_GAP, flattenRows, parseTree, repoPath, rowLook, topBar } from './tree'
+import type { TreeMarks } from './tree'
 
 const PANE = 'terry-diff'
 const PANE_TITLE = 'Diff review'
+// The file tree pane stays open beside the transcript; the diff pane opens as a second tab.
+const TREE_PANE = 'terry-tree'
+const TREE_TITLE = 'Files'
+// The body columns the tree pane asks for. A request: the person's own width for it wins, and a
+// docked pane is never wider than 45% of the terminal.
+const TREE_PANE_COLUMNS = 34
+// Blank columns at the left edge of the tree pane.
+const TREE_PADDING = 2
+const TREE_PANE_OPEN = { id: TREE_PANE, title: TREE_TITLE, columns: TREE_PANE_COLUMNS } as const
+const TREE_TIMEOUT_MS = 10_000
+// Columns one level of the branch chain moves a line to the right.
+const BRANCH_INDENT = '  '
 const COMMAND = 'terry'
 // The gate (src/manifest.rs) writes one manifest per reviewed call; this is its format.
 const MANIFEST_VERSION = 2
@@ -63,6 +77,11 @@ const review = atom({ plugin: 'terry', key: 'review' } as const, null)
 const promptReviewFor = atom({ plugin: 'terry', key: 'promptReviewFor' } as const, null)
 const gate = atom({ plugin: 'terry', key: 'gate' } as const, 'unknown')
 const branchChain = atom({ plugin: 'terry', key: 'branchChain' } as const, [])
+const tree = atom({ plugin: 'terry', key: 'tree' } as const, null)
+const claudeTouched = atom({ plugin: 'terry', key: 'claudeTouched' } as const, [])
+const reviewed = atom({ plugin: 'terry', key: 'reviewed' } as const, [])
+const collapsed = atom({ plugin: 'terry', key: 'collapsed' } as const, [])
+const treeRow = atom({ plugin: 'terry', key: 'treeRow' } as const, 0)
 const diffRow = atom({ plugin: 'terry', key: 'diffRow' } as const, 0)
 const diffColumn = atom({ plugin: 'terry', key: 'diffColumn' } as const, 0)
 
@@ -196,6 +215,8 @@ async function recordDecision($: EngineInterface, current: Review, decision: Pan
 async function approve($: EngineInterface, current: Review): Promise<void> {
   if (!(await writeApproval($, current, 'pane'))) return
   await recordDecision($, current, 'approved')
+  const approvedPaths = current.sections.flatMap(section => section.files.map(file => file.path))
+  await update($, reviewed, paths => [...new Set([...paths, ...approvedPaths])])
   await $.ui.close({ id: PANE })
   await $.prompt.submit({
     text: `terry: I approved the diff in the pane. Run the same command again, exactly as before:\n${current.command}`,
@@ -212,6 +233,44 @@ async function reject($: EngineInterface, current: Review): Promise<void> {
 async function moveSideways($: EngineInterface, current: Review, direction: -1 | 1): Promise<void> {
   const last = lastColumn(buildRows(current, DEFAULT_PANE_COLUMNS))
   await update($, diffColumn, place => nextColumn(place, direction, SIDEWAYS_STEP, last))
+}
+
+/** The click on a folder: closes it, or opens it when it is closed. */
+async function toggleFolder($: EngineInterface, path: string): Promise<void> {
+  await update($, collapsed, paths => (paths.includes(path) ? paths.filter(closed => closed !== path) : [...paths, path]))
+}
+
+/** The repo's file tree by `terry tree`; null when it cannot be read. */
+async function readTree($: EngineInterface): Promise<TreeSnapshot | null> {
+  try {
+    const { exitCode, stdout, isStdoutTruncated } = await $.process.run(['terry', 'tree'], {
+      timeoutMs: TREE_TIMEOUT_MS,
+    })
+    return exitCode === 0 && !isStdoutTruncated ? parseTree(stdout) : null
+  } catch {
+    // `terry` is not on PATH, or it did not finish in time.
+    return null
+  }
+}
+
+/** Reads the tree again; a tree that cannot be read leaves the last good one in place. */
+async function refreshTree($: EngineInterface): Promise<void> {
+  const snapshot = await readTree($)
+  if (snapshot !== null) await update($, tree, () => snapshot)
+}
+
+/**
+ * After Claude's Edit or Write: remembers the file as Claude's, and as not reviewed again, then
+ * reads the tree so the file's new status shows.
+ */
+async function noteClaudeEdit($: EngineInterface, filePath: string): Promise<void> {
+  const snapshot = await read($, tree)
+  const path = snapshot === null ? null : repoPath(snapshot.root, filePath)
+  if (path !== null) {
+    await update($, claudeTouched, paths => (paths.includes(path) ? paths : [...paths, path]))
+    await update($, reviewed, paths => paths.filter(reviewedPath => reviewedPath !== path))
+  }
+  await refreshTree($)
 }
 
 async function readGateState($: EngineInterface): Promise<GateState> {
@@ -247,6 +306,7 @@ async function refreshGate($: EngineInterface): Promise<void> {
   const state = await readGateState($)
   await update($, gate, () => state)
   await refreshBranchChain($)
+  await refreshTree($)
 }
 
 /** True while terry holds a command until the user answers in the pane. */
@@ -293,19 +353,26 @@ export const register: Register = (on, options) => {
   const scrollRows = scrollRowsFrom(options)
   // The pane's text width at its last drawing; `ui.scroll` does not carry it.
   let paneColumns = DEFAULT_PANE_COLUMNS
+  // The rows the tree pane's top bar took at its last drawing; `ui.scroll` does not carry it.
+  let treeBarRows = 0
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: COMMAND,
-      description: 'Show the last diff the terry gate asked you to approve',
+      description: 'Open the terry file tree, and show the last diff the gate asked you to approve',
     })
     await refreshGate($)
+    // Opened once, here: a pane the user closes stays closed. /terry opens it again.
+    if ((await read($, gate)) === 'on') await $.ui.open(TREE_PANE_OPEN)
     $.clock.every(GATE_POLL_MS, () => refreshGate($))
     return next(e)
   })
 
   on('command.run', { command: COMMAND }, async $ => {
-    if ((await read($, review)) === null) return { text: 'Terry has not reviewed a diff in this session yet.' }
+    await $.ui.open(TREE_PANE_OPEN)
+    if ((await read($, review)) === null) {
+      return { text: 'File tree opened. Terry has not reviewed a diff in this session yet.' }
+    }
     await $.ui.open({ id: PANE, title: PANE_TITLE })
     return { text: 'Diff review pane opened.' }
   })
@@ -342,6 +409,26 @@ export const register: Register = (on, options) => {
       const current = await read($, review)
       if (current?.toolUseId === e.tool_use_id && current.stage === 'prompt') await $.ui.close({ id: PANE })
     }
+  })
+
+  // Whatever a Bash call does to the files, the tree reads them again once the call is done.
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const result = await next(e)
+    await refreshTree($)
+    return result
+  })
+
+  // Claude's own edits: the tree marks these files as Claude's.
+  on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
+    const result = await next(e)
+    await noteClaudeEdit($, e.file_path)
+    return result
+  })
+
+  on('tool.call', { tool: 'Write' }, async ($, e, next) => {
+    const result = await next(e)
+    await noteClaudeEdit($, e.file_path)
+    return result
   })
 
   // A prompt cannot be submitted while the turn that holds the command runs; send it after.
@@ -448,10 +535,153 @@ export const register: Register = (on, options) => {
     )
   })
 
+  // The tree pane scrolls its own rows under the top bar, as the diff pane does, so the bar
+  // stays where it is; this hook answers without `next` and redraws from the pane's own place.
+  on('ui.scroll', { component: 'Pane', requestId: TREE_PANE }, async ($, e) => {
+    const snapshot = await read($, tree)
+    if (snapshot === null) return {}
+    const totalRows = flattenRows(snapshot.nodes, new Set(await read($, collapsed))).length
+    const windowRows = Math.max(1, e.bodyRows - treeBarRows)
+    const move = { by: e.by, contentRows: e.contentRows, isWheel: e.pointer !== undefined }
+    await update($, treeRow, place => {
+      const moved = nextOffset(place, move, scrollRows, totalRows, windowRows)
+      return Number.isInteger(moved) ? moved : place
+    })
+    return {}
+  })
+
+  // The tree pane: a top bar that stays put, terry (at rest, or alert while he holds a command)
+  // with the branch chain, and under it the files. Before any diff was reviewed the files are
+  // plain; after that, the changed ones are coloured by status, marked by who changed them, and
+  // bold until the user approved them.
+  on('ui.render', { component: 'Pane', requestId: TREE_PANE }, async ($, e) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    if ((await read($, gate)) !== 'on') return <Text dimColor>Terry is off in this folder.</Text>
+    const current = await read($, review)
+    const holding = isHolding(current)
+    const chain = await read($, branchChain)
+    const snapshot = await read($, tree)
+    const marks: TreeMarks = {
+      hasReviewed: current !== null,
+      collapsed: new Set(await read($, collapsed)),
+      claudeTouched: new Set(await read($, claudeTouched)),
+      reviewed: new Set(await read($, reviewed)),
+    }
+
+    const columns = e.props.bodyColumns - TREE_PADDING
+    const art = holding ? TERRY_SMALL_ALERT : TERRY_SMALL_CALM
+    const wordRows = 1 + (holding ? 1 : 0) + chain.length + (marks.hasReviewed ? 1 : 0)
+    const bar = topBar({
+      artRows: art.length,
+      artColumns: Math.max(...art.map(line => line.length)),
+      wordRows,
+      bodyColumns: columns,
+      bodyRows: e.props.scroll.bodyRows,
+    })
+    treeBarRows = bar.rows
+
+    const allRows = snapshot === null ? [] : flattenRows(snapshot.nodes)
+    const changedCount = allRows.filter(row => !row.isDir && row.status !== 'clean').length
+    const rows = snapshot === null ? [] : flattenRows(snapshot.nodes, marks.collapsed)
+    const windowRows = Math.max(1, e.props.scroll.bodyRows - bar.rows)
+    const first = Math.min(await read($, treeRow), lastOffset(rows.length, windowRows))
+    const shown = rows.slice(first, first + windowRows)
+
+    const owl = bar.hasArt && (
+      <Box flexDirection="column" flexShrink={0} marginRight={bar.isBeside ? TOP_BAR_ART_GAP : 0}>
+        {art.map(line => (
+          <Text color={holding ? 'warning' : CALM_COLOR} wrap="truncate-end">
+            {line}
+          </Text>
+        ))}
+      </Box>
+    )
+
+    const words = (
+      <Box flexDirection="column" flexShrink={1}>
+        {holding ? (
+          <Text bold color="warning" wrap="truncate-end">
+            Terry holds a command
+          </Text>
+        ) : (
+          <Text bold color={CALM_COLOR} wrap="truncate-end">
+            Terry is watching
+          </Text>
+        )}
+        {holding && (
+          <Text dimColor wrap="truncate-end">
+            Answer in the Diff review tab.
+          </Text>
+        )}
+        {/* One branch a line, each one level further in: the pane is too narrow for a row of them. */}
+        {chain.map((branch, depth) => (
+          <Text bold={depth === chain.length - 1} color={LAYER_COLORS[depth % LAYER_COLORS.length]} wrap="truncate-end">
+            {depth === 0 ? branch : `${BRANCH_INDENT.repeat(depth - 1)}↳ ${branch}`}
+          </Text>
+        ))}
+        {marks.hasReviewed && (
+          <Text dimColor wrap="truncate-end">
+            {`${changedCount} changed`}
+          </Text>
+        )}
+      </Box>
+    )
+
+    return (
+      <Box flexDirection="column" marginLeft={TREE_PADDING}>
+        <Box flexDirection={bar.isBeside ? 'row' : 'column'} {...(bar.isBeside ? { alignItems: 'center' as const } : {})}>
+          {owl}
+          {words}
+        </Box>
+        <Text dimColor wrap="truncate-end">
+          {'─'.repeat(columns)}
+        </Text>
+        {snapshot === null ? (
+          <Text dimColor>No file tree yet.</Text>
+        ) : (
+          shown.map(row => {
+            const look = rowLook(row, marks)
+            const name = (
+              <Text {...look.style} wrap="truncate-end">
+                {`${look.glyph}${row.name}${row.isDir ? '/' : ''}`}
+              </Text>
+            )
+            return (
+              <Box flexDirection="row">
+                <Text dimColor>{row.guide}</Text>
+                <Box flexGrow={1} flexShrink={1}>
+                  {/* A click on a folder closes or opens it; Tab and Enter do the same. */}
+                  {row.isDir ? (
+                    <Button key={row.path} plain onPress={() => void toggleFolder($, row.path)}>
+                      {name}
+                    </Button>
+                  ) : (
+                    name
+                  )}
+                </Box>
+                {look.badge !== '' && (
+                  <Text color={look.badgeColor} bold>
+                    {` ${look.badge}`}
+                  </Text>
+                )}
+              </Box>
+            )
+          })
+        )}
+        {/* One row more than the window shows: the engine then has something to scroll, so its
+            arrow, page and Home/End keys reach the `ui.scroll` hook above. */}
+        <Text> </Text>
+      </Box>
+    )
+  })
+
   // The band above the prompt: terry, at rest while the gate is on for this folder, and
-  // alert, in the warning colour, while he holds a command for the user's review.
+  // alert, in the warning colour, while he holds a command for the user's review. The tree pane
+  // carries terry and the branch chain when it is drawn; the band is for a terminal too narrow
+  // to place it.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey || (await read($, gate)) !== 'on') return next(e)
+    if ((await $.ui.panes()).some(pane => pane.id === TREE_PANE && pane.isPlaced)) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     const current = await read($, review)
     const holding = isHolding(current)
