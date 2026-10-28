@@ -264,6 +264,9 @@ row until its call ends, so until then only the top bar names it.
   give more output than the plugin reads, and the tree then keeps its last good state.
 - The pane draws up to about 90,000 characters of diff; past that, it lists how many files
   it left out and where the full patch is.
+- The command above the diff is cut to 3 rows, with a note that says how many rows it left out,
+  so a long commit message does not push the diff down. The permission prompt that follows shows
+  the whole command.
 - Claude Code runs the gate before the whole command line. When one line runs `git add`, `rm`,
   `mv`, `reset` or `restore --staged` and then `git commit`, terry replays those on a copy of
   the index, so the diff shows what the commit will hold. `git commit <paths>` shows only
