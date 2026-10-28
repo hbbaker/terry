@@ -144,7 +144,7 @@ pub fn branches(args: &[&str]) -> ExitCode {
 }
 
 /// The one folder a config command names, resolved; the current folder when it names none.
-fn target_dir(args: &[&str]) -> Result<PathBuf, String> {
+pub(crate) fn target_dir(args: &[&str]) -> Result<PathBuf, String> {
     let dir = match args {
         [] => env::current_dir()
             .map_err(|error| format!("cannot read the current folder: {error}"))?,

@@ -19,3 +19,21 @@ export const TERRY_ALERT: readonly string[] = [
   '    ╲ · · ╱',
   '━━━━━╲┷┷┷╱━━━━━',
 ]
+
+/** A smaller terry for the file tree pane, at rest: the ears are the ends of a solid line over the rounded head. */
+export const TERRY_SMALL_CALM: readonly string[] = [
+  '  ^───^',
+  '╭─╯◠▾◠╰─╮',
+  '╲ · · · ╱',
+  ' ╲ · · ╱',
+  '━━╲┷┷┷╱━━',
+]
+
+/** A smaller terry for the file tree pane, while he holds a command: eyes wide. */
+export const TERRY_SMALL_ALERT: readonly string[] = [
+  '  ^───^   !',
+  '╭─╯◉▾◉╰─╮',
+  '╲ · · · ╱',
+  ' ╲ · · ╱',
+  '━━╲┷┷┷╱━━',
+]

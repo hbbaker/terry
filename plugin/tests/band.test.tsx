@@ -3,6 +3,7 @@ import type { ProcessRunResult } from 'claude-code'
 import type { TestBody } from 'claude-code/testing'
 
 const HOME = '/home/tester'
+const TREE_PANE = 'terry-tree'
 const REVIEW_KEY = 'b'.repeat(64)
 const MANIFEST_PATH = `${HOME}/.claude/diffs/calls/toolu_01.json`
 const PANE_MANIFEST = {
@@ -57,6 +58,9 @@ async function startSession(
   const clock = mock.clock(on)
   let answer = status
   on('command.register', () => ({ value: { command: 'terry' } }))
+  // A terminal too narrow for the tree pane: it waits undrawn, so the band is drawn.
+  on('ui.open', (_, e) => ({ value: e.id === TREE_PANE ? { isPlaced: false, reason: 'too-narrow' } : { isPlaced: true } }))
+  on('ui.panes', () => ({ value: [] }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('process.run', (_, e) => {
     const result = e.argv.includes('branches') ? branches : answer
@@ -120,7 +124,6 @@ test('should show the branch chain under the held command when terry waits for a
   on('env.get', () => ({ value: HOME }))
   on('fs.exists', (_, e) => ({ value: e.path in files }))
   on('fs.read', (_, e) => ({ value: files[e.path] ?? '' }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
   on('tool.call', () => {
     files[MANIFEST_PATH] = JSON.stringify(PANE_MANIFEST)
     return { result: {} }
@@ -179,7 +182,6 @@ test('should show the held command when terry waits for a review in the pane', a
   on('env.get', () => ({ value: HOME }))
   on('fs.exists', (_, e) => ({ value: e.path in files }))
   on('fs.read', (_, e) => ({ value: files[e.path] ?? '' }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
   on('tool.call', () => {
     files[MANIFEST_PATH] = JSON.stringify(PANE_MANIFEST)
     return { result: {} }
