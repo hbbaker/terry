@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { activeLine, flattenRows, parseTree, repoPath, rowLook, topBar, withoutFirst } from '../hooks/tree'
 import type { TreeMarks, TreeRow } from '../hooks/tree'
+import { DEFAULT_DISPLAY } from '../hooks/settings'
 
 const TREE_JSON = JSON.stringify({
   root: '/work/app',
@@ -14,6 +15,7 @@ const TREE_JSON = JSON.stringify({
 })
 
 const NO_MARKS: TreeMarks = {
+  palette: DEFAULT_DISPLAY.colors,
   hasChanges: false,
   collapsed: new Set(),
   claudeTouched: new Set(),
@@ -272,4 +274,51 @@ test('should end one call at a time when two calls edit the same file', () => {
 
 test('should leave the paths as they are when the file is not in them', () => {
   expect(withoutFirst(['a.rs'], 'b.rs')).toEqual(['a.rs'])
+})
+
+const CUSTOM_PALETTE = {
+  ...DEFAULT_DISPLAY.colors,
+  added: '#010101',
+  modified: '#020202',
+  deleted: '#030303',
+  untracked: '#040404',
+  claude: '#050505',
+  folder: '#060606',
+}
+
+test('should take the status colour from the palette when the user set one', () => {
+  const marks = { ...NO_MARKS, palette: CUSTOM_PALETTE, hasChanges: true }
+
+  const colors = (['added', 'modified', 'deleted', 'untracked'] as const).map(
+    status => rowLook(file('a.rs', status), marks).style.color,
+  )
+  const badges = (['added', 'modified', 'deleted', 'untracked'] as const).map(
+    status => rowLook(file('a.rs', status), marks).badgeColor,
+  )
+
+  expect(colors).toEqual(['#010101', '#020202', '#030303', '#040404'])
+  expect(badges).toEqual(colors)
+})
+
+test('should take the Claude colour from the palette for the mark and the live file', () => {
+  const marks = {
+    ...NO_MARKS,
+    palette: CUSTOM_PALETTE,
+    hasChanges: true,
+    claudeTouched: new Set(['a.rs']),
+    claudeActive: new Set(['b.rs']),
+  }
+
+  expect(rowLook(file('a.rs', 'modified'), marks).glyphColor).toBe('#050505')
+  expect(rowLook(file('b.rs', 'modified'), marks).style.color).toBe('#050505')
+})
+
+test('should take the folder colour, and the colour of the count, from the palette', () => {
+  const marks = { ...NO_MARKS, palette: CUSTOM_PALETTE, collapsed: new Set(['src']) }
+  const folder = flattenRows(NESTED, marks.collapsed)[0]!
+
+  const look = rowLook(folder, marks)
+
+  expect(look.style.color).toBe('#060606')
+  expect(look.badgeColor).toBe('#020202')
 })

@@ -114,12 +114,71 @@ the fallback ESLint in `lint/`. A tool that is not installed is skipped, and the
 | --- | --- | --- |
 | Folders where terry is off | `terry exclude` / `terry include`; the list is in `~/.config/terry/config.json` (or under `$XDG_CONFIG_HOME`) | none |
 | Files that are not linted in a project | `.terry` at the repo root: `{"lint": {"exclude": ["vendor/", "*.generated.py"]}}` (see "Skip files from lint") | none |
+| Name, colours and width of the Files pane | The `display` section of terry's config file (see "Display settings") | Terry, the colours in the table below, 34 columns |
 | Pane scroll speed (rows per mouse wheel tick, 1 to 50) | `/config`, row "Diff pane scroll speed"; or `~/.claude/settings.json`: `"pluginConfigs": { "terry@terry": { "options": { "scrollRows": 5 } } }` | 3 |
 | Skip the pane step | `DIFF_GATE_PANE_REVIEW=0` in the environment Claude Code runs in | pane step on |
 | Plain prompt preview | `DIFF_GATE_COLOR=0` in the environment Claude Code runs in | colors on |
 
 A change in `/config` reloads the plugin at once. After you edit `settings.json` by hand, run
 `/reload-plugins`.
+
+### Display settings
+
+The name terry shows, the colours of the Files pane and the width it asks for are in the
+`display` section of terry's config file, next to the `exclude` list. Every key is optional; this
+is the file with every default written out:
+
+```json
+{
+  "display": {
+    "name": "Terry",
+    "paneColumns": 34,
+    "colors": {
+      "added": "success",
+      "modified": "warning",
+      "deleted": "error",
+      "untracked": "#7FD6D6",
+      "claude": "claude",
+      "owl": "#8FB8ED",
+      "alert": "warning",
+      "folder": "#8FB8ED",
+      "branches": ["#8FB8ED", "#9BD39B", "#F2C879", "#E49AD0", "#7FD6D6", "#F29E8E"]
+    }
+  }
+}
+```
+
+| Key | What it sets | Allowed |
+| --- | --- | --- |
+| `name` | The name in the Files pane, the band above the prompt, the empty Diff review pane and the `/terry` messages. The `terry` command, `/terry` itself and the gate's messages keep "terry". | 1 to 24 characters |
+| `paneColumns` | The width the Files pane asks for when it opens: a request, not a grant (see below). | 24 to 100 |
+| `colors.added`, `modified`, `deleted`, `untracked` | The colour of a file by its status. | a colour |
+| `colors.claude` | Claude's colour: the file it is editing, its `✎` mark, and the top bar line. | a colour |
+| `colors.owl` | The owl and his line while he watches. | a colour |
+| `colors.alert` | The owl and his line while he holds a command. | a colour |
+| `colors.folder` | The folders in the tree. | a colour |
+| `colors.branches` | One colour per layer of the branch chain, from the default branch down; the list repeats when the chain is deeper. | 1 to 12 colours |
+
+A colour is `#RRGGBB`, or a name from Claude Code's theme: `text`, `inverseText`, `inactive`,
+`subtle`, `suggestion`, `remember`, `success`, `error`, `warning`, `merged`, `claude`,
+`permission`, `planMode`, `autoAccept`, `promptBorder`, `bashBorder`, `ide`, `diffAdded`,
+`diffRemoved`, `diffAddedDimmed`, `diffRemovedDimmed`, `diffAddedWord` and `diffRemovedWord`. A
+theme name follows your theme; a hex colour stays the same in every theme.
+
+A value that does not pass its check is replaced by the default, and the rest of the file still
+applies. `terry config` prints the settings in effect as JSON, with a `problems` list that says
+what was rejected and why; the plugin also writes each new problem to the debug log once. The
+name and the colours change within 15 seconds of an edit; the width applies the next time the
+pane opens (close it, then run `/terry`, or start a new session).
+
+The width is only a request. Claude Code docks a pane at most 45% of the terminal wide, and it
+keeps the width you last gave a plugin pane (by dragging it): that width wins over `paneColumns`,
+in every session, and no plugin can change it. So `paneColumns` is the width of the first pane
+you see; after you resize once, the pane keeps your width. Claude Code stores the kept width in
+its own settings file, as `pluginPanes.dockColumns`. Terry does not touch it.
+
+Claude cannot edit this file: the gates deny its commands and edits that name it. The commands
+that turn terry off or on in a folder keep the `display` section.
 
 ## Using it
 
@@ -162,8 +221,8 @@ A change in `/config` reloads the plugin at once. After you edit `settings.json`
 | --- | --- |
 | `▾ src/` or `▸ src/` | An open or a closed folder. A click (or Tab and Enter) toggles it. A number after a closed folder is how many changed files it hides. |
 | `✎` in orange | Claude's Edit or Write tool changed this file in this session. |
-| Name in orange and bold | Claude is editing this file right now. It starts with the call, also while the call waits for your permission, and ends with the call. |
-| `✎ Claude is editing x.rs` in the top bar | The same, in the top bar; `+2` means two more files. |
+| Name in orange and bold | Claude is on this file: its latest Edit or Write call. It starts with the call, also while the call waits for your permission, and it moves to the next file when Claude starts another call. It ends when Claude's turn ends. |
+| `✎ Claude is editing x.rs` in the top bar | The same, in the top bar; `+2` means two more files at once (parallel calls). |
 | `·` | The change is not from Claude's Edit or Write: you made it, or a command Claude ran (`sed`, a script). |
 | Yellow, green, red, cyan name | Modified, added, deleted, untracked. |
 | `M`, `A`, `D`, `?` right after the name | The same status, as a letter. |
@@ -171,9 +230,11 @@ A change in `/config` reloads the plugin at once. After you edit `settings.json`
 | Dim | A commit holds the change (dim yellow reads as grey), or the file did not change. |
 
 A file with several signs reads left to right: the mark says who, the colour says what happened,
-bold or dim says whether it is committed. The orange `✎` stays on a file after Claude's call ends,
-and its name goes back to its status colour. "Right now" covers Edit and Write only; a file that
-Claude creates has no row until the call ends, so only the top bar names it.
+bold or dim says whether it is committed. The orange `✎` stays on a file for the rest of the
+session; its name goes back to its status colour when Claude moves to another file or its turn
+ends. When the file is out of view, the tree scrolls to it (a file already in view leaves your
+scroll place alone). The live marks cover Edit and Write only; a file that Claude creates has no
+row until its call ends, so until then only the top bar names it.
 
 ## Limits
 

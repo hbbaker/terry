@@ -55,7 +55,7 @@ pub fn is_config_path(path: &Path) -> bool {
     paths::resolve(path) == paths::resolve(&paths::config_path())
 }
 
-fn read_config() -> Result<Map<String, Value>, String> {
+pub(crate) fn read_config() -> Result<Map<String, Value>, String> {
     let path = paths::config_path();
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
