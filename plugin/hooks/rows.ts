@@ -31,6 +31,13 @@ const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/
 
 const TAB_WIDTH = 4
 
+/**
+ * Rows of the command the pane shows above the diff. A commit message in a heredoc can run to
+ * dozens of lines, and the diff is what the user came to read; the permission prompt that follows
+ * shows the whole command.
+ */
+export const MAX_COMMAND_ROWS = 3
+
 /** Cuts `text` into pieces of at most `width` characters, so every piece fills one row. */
 export function chunkText(text: string, width: number): string[] {
   const characters = Array.from(text.replaceAll('\t', ' '.repeat(TAB_WIDTH)))
@@ -77,6 +84,19 @@ function diffRows(path: string, hunks: string): Row[] {
 }
 
 /**
+ * The command that led to the review, as at most `MAX_COMMAND_ROWS` rows and, when it is longer,
+ * one more row that says how much is left out. Each line of the command starts its own row, and a
+ * line wider than the pane takes more rows.
+ */
+function commandRows(command: string, columns: number): Row[] {
+  const pieces = `$ ${command}`.split('\n').flatMap(line => chunkText(line, columns))
+  const shown: Row[] = pieces.slice(0, MAX_COMMAND_ROWS).map(text => ({ kind: 'command', text }))
+  const hidden = pieces.length - MAX_COMMAND_ROWS
+  if (hidden > 0) shown.push({ kind: 'command', text: `… ${hidden} more row${hidden === 1 ? '' : 's'} of the command not shown` })
+  return shown
+}
+
+/**
  * The review as terminal rows, `columns` wide: the pane draws a window of them under its own
  * fixed header, so a long line is cut into rows here and the row count is exact.
  */
@@ -86,7 +106,7 @@ export function buildRows(review: Review, columns: number): Row[] {
     for (const piece of chunkText(text, columns)) rows.push({ kind, text: piece })
   }
 
-  add('command', `$ ${review.command}`)
+  rows.push(...commandRows(review.command, columns))
   for (const section of review.sections) {
     add('blank', '')
     add('title', section.title)
