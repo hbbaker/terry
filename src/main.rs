@@ -7,7 +7,7 @@
 use std::env;
 use std::process::ExitCode;
 
-use terry::{config, gate_bash, gate_edit, install, tree};
+use terry::{config, display, gate_bash, gate_edit, install, tree};
 
 const USAGE: &str = "usage:
   terry install [--yes] [--no-plugin] set terry up on this machine
@@ -16,6 +16,7 @@ const USAGE: &str = "usage:
   terry status [folder]               exit 0 if terry is on in a folder, 1 if it is off
   terry branches [folder]             print the branch chain of a folder, root first, one per line
   terry tree [folder]                 print the files of a folder's repo as JSON, with their git status
+  terry config                        print the display settings in effect (name, colours, pane width) as JSON
   terry gate bash                     PreToolUse hook for Bash calls (reads the call on stdin)
   terry gate edit                     PreToolUse hook for file edits (reads the call on stdin)";
 
@@ -37,6 +38,7 @@ fn main() -> ExitCode {
         ["status", folder @ ..] => config::status(folder),
         ["branches", folder @ ..] => config::branches(folder),
         ["tree", folder @ ..] => tree::run(folder),
+        ["config"] => display::run(),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
