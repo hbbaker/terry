@@ -43,10 +43,14 @@ export type GateState = 'on' | 'off' | 'unknown'
 export type TreeStatus = 'clean' | 'added' | 'modified' | 'deleted' | 'untracked'
 
 /** One entry of `terry tree`: a file with its status, or a folder with its entries. */
-export type TreeNode = { file: string; status: TreeStatus } | { dir: string; children: TreeNode[] }
+export type TreeNode = { file: string; status: TreeStatus; landed: boolean } | { dir: string; children: TreeNode[] }
 
-/** What `terry tree` printed: the repo root (absolute), the checked-out branch and the files. */
-export type TreeSnapshot = { root: string; branch: string; nodes: TreeNode[] }
+/**
+ * What `terry tree` printed: the repo root (absolute), the checked-out branch, the ref the changes
+ * count from (where the branch last met what is published), and the files. A file is `landed` when
+ * a commit since then changed it and nothing newer is uncommitted.
+ */
+export type TreeSnapshot = { root: string; branch: string; since: string; nodes: TreeNode[] }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -61,10 +65,10 @@ declare module 'claude-code' {
       tree: TreeSnapshot | null
       /** Repo-relative paths Claude edited or wrote in this session. */
       claudeTouched: string[]
+      /** Repo-relative paths with an Edit or Write call of Claude's in flight; one entry per call. */
+      claudeActive: string[]
       /** Repo-relative paths of the folders the user collapsed in the file tree. */
       collapsed: string[]
-      /** Repo-relative paths of the diffs the user approved; a later edit by Claude removes a path. */
-      reviewed: string[]
       /** The file tree's own scroll place: the index of the first tree row it shows. */
       treeRow: number
       /** The pane's own scroll place: the index of the first diff row it shows. */
