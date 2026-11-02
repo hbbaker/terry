@@ -106,7 +106,8 @@ export function buildRows(review: Review, columns: number): Row[] {
     for (const piece of chunkText(text, columns)) rows.push({ kind, text: piece })
   }
 
-  rows.push(...commandRows(review.command, columns))
+  // A review of no command (one file's diff) has no command rows to draw.
+  if (review.command !== '') rows.push(...commandRows(review.command, columns))
   for (const section of review.sections) {
     add('blank', '')
     add('title', section.title)

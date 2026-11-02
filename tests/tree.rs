@@ -309,3 +309,28 @@ fn should_mark_a_file_deleted_when_a_landed_commit_removed_it() {
     assert_eq!(status_of(&tree, "README.md").as_deref(), Some("deleted"));
     assert_eq!(landed_of(&tree, "README.md"), Some(true));
 }
+
+#[test]
+fn should_return_patch_against_base_when_file_is_modified() {
+    let repo = Repo::new();
+    repo.write("src/lib.rs", "changed");
+    let patch = terry::tree::file_diff(&repo.path, "src/lib.rs").expect("builds the patch");
+    assert!(patch.contains("-lib"));
+    assert!(patch.contains("+changed"));
+}
+
+#[test]
+fn should_return_new_file_patch_when_file_is_untracked() {
+    let repo = Repo::new();
+    repo.write("notes.txt", "fresh");
+    let patch = terry::tree::file_diff(&repo.path, "notes.txt").expect("builds the patch");
+    assert!(patch.contains("new file mode"));
+    assert!(patch.contains("+fresh"));
+}
+
+#[test]
+fn should_reject_path_when_it_escapes_repo() {
+    let repo = Repo::new();
+    assert!(terry::tree::file_diff(&repo.path, "../secret").is_err());
+    assert!(terry::tree::file_diff(&repo.path, "/etc/passwd").is_err());
+}

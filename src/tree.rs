@@ -6,6 +6,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -158,6 +159,50 @@ pub fn run(args: &[&str]) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// `terry diff <file>`: prints the patch of one file of the repo, against the same base the tree
+/// marks count from. The pane plugin shows it when the user clicks a changed file.
+pub fn run_diff(args: &[&str]) -> ExitCode {
+    let result = match args {
+        [file] => env::current_dir()
+            .map_err(|error| format!("cannot read the current folder: {error}"))
+            .and_then(|dir| file_diff(&dir, file)),
+        _ => Err("give one file, as a path from the repo root".to_owned()),
+    };
+    match result {
+        Ok(patch) => {
+            print!("{patch}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("ERROR: {error}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// The patch of `file` (a path from the repo root) against the base of the tree. A file that
+/// git does not track yet shows as all added lines. A file with no change gives an empty patch.
+pub fn file_diff(dir: &Path, file: &str) -> Result<String, String> {
+    if !stays_in_repo(file) {
+        return Err(format!("'{file}' is not a path inside the repo"));
+    }
+    let root = git::repo_root(dir)?;
+    if list_untracked(&root)?.iter().any(|path| path == file) {
+        return git::diff_new_file(&root, file);
+    }
+    let base = find_base(&root);
+    git::diff(&root, &[&base.commit, "--", file])
+}
+
+/// True for a relative path with no `..` part.
+fn stays_in_repo(file: &str) -> bool {
+    let path = Path::new(file);
+    path.is_relative()
+        && !path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
 }
 
 /// The root folder, the branch, what the changes count from, and the file tree of the repo that
