@@ -22,9 +22,14 @@ import type { TreeMarks } from './tree'
 
 const PANE = 'terry-diff'
 const PANE_TITLE = 'Diff review'
+// The mark on the Close button of a diff pane.
+const CLOSE_MARK = '✕'
 // The file tree pane stays open beside the transcript; the diff pane opens as a second tab.
 const TREE_PANE = 'terry-tree'
 const TREE_TITLE = 'Files'
+// The diff of one file, opened by a click on a changed file in the tree. It only shows the diff:
+// no gate waits on it, so it has no Approve or Reject.
+const FILE_DIFF_PANE = 'terry-file-diff'
 // Rows kept above the file Claude is on when the tree scrolls to it.
 const REVEAL_ROWS_ABOVE = 2
 // Blank columns at the left edge of the tree pane.
@@ -62,7 +67,9 @@ const BAND_MIN_TEXT_COLUMNS = 30
 // Rows above the diff that do not scroll: the title, the buttons and the key hints while the gate
 // waits for an answer; the status line and a blank row once the user answered; none otherwise.
 const HEADER_ROWS_PENDING = 3
-const HEADER_ROWS_ANSWERED = 2
+const HEADER_ROWS_ANSWERED = 3
+// The row that holds only the Close button, in a pane with no other header.
+const HEADER_ROWS_CLOSE_ONLY = 1
 // Columns one press of the left or right button moves the diff sideways.
 const SIDEWAYS_STEP = 20
 // Columns the pane's text starts in and the width assumed before the first drawing.
@@ -92,6 +99,8 @@ const collapsed = atom({ plugin: 'terry', key: 'collapsed' } as const, [])
 const treeRow = atom({ plugin: 'terry', key: 'treeRow' } as const, 0)
 const diffRow = atom({ plugin: 'terry', key: 'diffRow' } as const, 0)
 const diffColumn = atom({ plugin: 'terry', key: 'diffColumn' } as const, 0)
+const fileDiff = atom({ plugin: 'terry', key: 'fileDiff' } as const, null)
+const fileDiffRow = atom({ plugin: 'terry', key: 'fileDiffRow' } as const, 0)
 
 async function diffsDir($: EngineInterface): Promise<string | null> {
   const home = await $.env.get('HOME')
@@ -244,9 +253,59 @@ async function moveSideways($: EngineInterface, current: Review, direction: -1 |
   await update($, diffColumn, place => nextColumn(place, direction, SIDEWAYS_STEP, last))
 }
 
+/** The Close button of a diff pane: the tab title is plain text, so the click lands here. */
+function closeButton($: EngineInterface, paneId: string, Button: ReturnType<EngineInterface['ui']['resolve']>['Button']) {
+  return (
+    <Button key="close" hotkey="x" onPress={() => void $.ui.close({ id: paneId })}>
+      {`${CLOSE_MARK} Close`}
+    </Button>
+  )
+}
+
 /** The click on a folder: closes it, or opens it when it is closed. */
 async function toggleFolder($: EngineInterface, path: string): Promise<void> {
   await update($, collapsed, paths => (paths.includes(path) ? paths.filter(closed => closed !== path) : [...paths, path]))
+}
+
+/** The patch of one file by `terry diff`; null when it cannot be read. */
+async function readFileDiff($: EngineInterface, path: string): Promise<string | null> {
+  try {
+    const { exitCode, stdout, isStdoutTruncated } = await $.process.run(['terry', 'diff', path], {
+      timeoutMs: TREE_TIMEOUT_MS,
+    })
+    return exitCode === 0 && !isStdoutTruncated ? stdout : null
+  } catch {
+    // `terry` is not on PATH, or it did not finish in time.
+    return null
+  }
+}
+
+/** The click on a changed file: shows its diff in the file diff pane. */
+async function openFileDiff($: EngineInterface, path: string): Promise<void> {
+  const patch = await readFileDiff($, path)
+  if (patch === null) {
+    $.ui.log(`terry: cannot read the diff of ${path}`)
+    return
+  }
+  const { shown } = fitFiles(splitPatch(patch), MAX_DRAWN_CHARACTERS)
+  const section: ReviewSection = {
+    title: `Diff of ${path}`,
+    notes: [],
+    lint: [],
+    patchPath: null,
+    files: shown,
+    omittedFiles: 0,
+  }
+  await update($, fileDiff, () => ({
+    toolUseId: '',
+    command: '',
+    stage: 'prompt_only',
+    reviewKey: '',
+    decision: 'pending',
+    sections: [section],
+  }))
+  await update($, fileDiffRow, () => 0)
+  await $.ui.open({ id: FILE_DIFF_PANE, title: path })
 }
 
 /**
@@ -406,7 +465,7 @@ function scrollRowsFrom(options: PluginOptions): number {
 }
 
 function headerRows(current: Review): number {
-  if (current.stage !== 'pane') return 0
+  if (current.stage !== 'pane') return HEADER_ROWS_CLOSE_ONLY
   return current.decision === 'pending' ? HEADER_ROWS_PENDING : HEADER_ROWS_ANSWERED
 }
 
@@ -591,6 +650,7 @@ export const register: Register = (on, options) => {
             <Text dimColor>y approve · n reject · a and d scroll sideways</Text>
           </Box>
         )}
+        {!isPending && closeButton($, PANE, Button)}
         {current.stage === 'pane' && current.decision === 'approved' && (
           <Box flexDirection="column">
             <Text color="success">Approved. Claude runs the command again; confirm it in the permission prompt.</Text>
@@ -614,6 +674,49 @@ export const register: Register = (on, options) => {
         )}
         {/* One row more than the window shows: the engine then has something to scroll, so its
             arrow, page and Home/End keys reach the `ui.scroll` hook above. */}
+        <Text> </Text>
+      </Box>
+    )
+  })
+
+  on('ui.scroll', { component: 'Pane', requestId: FILE_DIFF_PANE }, async ($, e) => {
+    const current = await read($, fileDiff)
+    if (current === null) return {}
+    const totalRows = buildRows(current, paneColumns).length
+    const windowRows = windowRowsOf(current, e.bodyRows)
+    const move = { by: e.by, contentRows: e.contentRows, isWheel: e.pointer !== undefined }
+    await update($, fileDiffRow, place => {
+      const moved = nextOffset(place, move, scrollRows, totalRows, windowRows)
+      return Number.isInteger(moved) ? moved : place
+    })
+    return {}
+  })
+
+  on('ui.render', { component: 'Pane', requestId: FILE_DIFF_PANE }, async ($, e) => {
+    const { Box, Button, Text, Code } = $.ui.resolve(e)
+    const current = await read($, fileDiff)
+    if (current === null) return <Text dimColor>Click a changed file in the file tree to see its diff.</Text>
+
+    paneColumns = e.props.bodyColumns
+    const rows = buildRows(current, paneColumns)
+    const windowRows = windowRowsOf(current, e.props.scroll.bodyRows)
+    const first = Math.min(await read($, fileDiffRow), lastOffset(rows.length, windowRows))
+    const hasChanges = current.sections.some(section => section.files.length > 0)
+
+    return (
+      <Box flexDirection="column">
+        {closeButton($, FILE_DIFF_PANE, Button)}
+        {!hasChanges && <Text dimColor>No changes in this file.</Text>}
+        {toBlocks(rows.slice(first, first + windowRows)).map(block =>
+          block.type === 'diff' ? (
+            <Code format="diff" path={block.path} source={block.source} wrap="truncate-end" />
+          ) : (
+            <Text {...ROW_STYLES[block.row.kind]} wrap="truncate-end">
+              {block.row.text === '' ? ' ' : block.row.text}
+            </Text>
+          ),
+        )}
+        {/* One row more than the window shows, so the engine's scroll keys reach `ui.scroll`. */}
         <Text> </Text>
       </Box>
     )
@@ -779,9 +882,18 @@ export const register: Register = (on, options) => {
                   )}
                 </Box>
                 <Box flexShrink={1}>
-                  <Text {...look.style} wrap="truncate-end">
-                    {label}
-                  </Text>
+                  {/* A click on a changed file opens its diff; a file with no change is not a button. */}
+                  {row.status === 'clean' ? (
+                    <Text {...look.style} wrap="truncate-end">
+                      {label}
+                    </Text>
+                  ) : (
+                    <Button key={row.path} plain onPress={() => void openFileDiff($, row.path)}>
+                      <Text {...look.style} wrap="truncate-end">
+                        {label}
+                      </Text>
+                    </Button>
+                  )}
                 </Box>
                 {look.badge !== '' && badge}
               </Box>

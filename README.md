@@ -226,6 +226,7 @@ that turn terry off or on in a folder keep the `display` section.
 | `·` | The change is not from Claude's Edit or Write: you made it, or a command Claude ran (`sed`, a script). |
 | Yellow, green, red, cyan name | Modified, added, deleted, untracked. |
 | `M`, `A`, `D`, `?` right after the name | The same status, as a letter. |
+| Click on a changed file | Opens its diff against the same base, in a read-only "file diff" pane. `terry diff <file>` prints the same patch. |
 | Bold | The change is not committed yet. |
 | Dim | A commit holds the change (dim yellow reads as grey), or the file did not change. |
 
