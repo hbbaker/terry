@@ -105,6 +105,10 @@ declare module 'claude-code' {
       diffRow: number
       /** How many columns the diff is scrolled to the left; 0 shows each line from its start. */
       diffColumn: number
+      /** The diff of the file the user clicked in the tree, as a review that has no command and no gate; null until one was clicked. */
+      fileDiff: Review | null
+      /** The file diff pane's own scroll place: the index of the first row it shows. */
+      fileDiffRow: number
     }
   }
 }
