@@ -159,6 +159,32 @@ pub fn diff(repo: &Path, args: &[&str]) -> Result<String, String> {
     git(repo, &full)
 }
 
+/// The patch that makes `file` out of nothing, for a file git does not track yet. `git diff
+/// --no-index` exits with 1 when the files differ, so 1 is success here.
+pub fn diff_new_file(repo: &Path, file: &str) -> Result<String, String> {
+    let args = [
+        "git",
+        "--no-pager",
+        "diff",
+        "--no-index",
+        "--no-ext-diff",
+        "--no-color",
+        "--",
+        "/dev/null",
+        file,
+    ];
+    let mut command = Command::new(args[0]);
+    command
+        .args(&args[1..])
+        .current_dir(repo)
+        .envs(PLAIN_OUTPUT_ENV);
+    match process::run_captured(&mut command, None, TIMEOUT) {
+        Ok(done) if matches!(done.status, Some(0 | 1)) => Ok(done.stdout),
+        Ok(done) => Err(format!("`{}` failed: {}", args.join(" "), done.stderr.trim())),
+        Err(error) => Err(format!("`{}` failed: {error}", args.join(" "))),
+    }
+}
+
 pub fn ref_exists(repo: &Path, reference: &str) -> bool {
     let commit = format!("{reference}^{{commit}}");
     git(repo, &["rev-parse", "--verify", "--quiet", &commit]).is_ok()

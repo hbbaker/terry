@@ -67,6 +67,11 @@ const CLEAN_TREE: ProcessRunResult = {
     tree: [{ file: 'README.md', status: 'clean', landed: false }],
   }),
 }
+/** What `terry diff src/main.rs` answers. */
+const FILE_DIFF: ProcessRunResult = {
+  ...ON,
+  stdout: ['diff --git a/src/main.rs b/src/main.rs', '--- a/src/main.rs', '+++ b/src/main.rs', '@@ -1 +1 @@', '-old', '+new', ''].join('\n'),
+}
 const BRANCHES: ProcessRunResult = { ...ON, stdout: 'main\ndev\n' }
 
 /** What `terry config` answers for these display settings. */
@@ -89,11 +94,13 @@ type SessionOptions = {
   config?: ProcessRunResult
   /** Collects every line the plugin writes to the log. */
   logs?: string[]
+  /** What `terry diff` answers. */
+  diff?: ProcessRunResult
 }
 
 /** Starts the session with the files of a repo on `dev`. */
 async function startSession(
-  ...[$, on, { status = ON, panes = [], opened = [], tree = TREE, hold = Promise.resolve(), config = configOf(), logs = [] } = {}]: [
+  ...[$, on, { status = ON, panes = [], opened = [], tree = TREE, hold = Promise.resolve(), config = configOf(), logs = [], diff = FILE_DIFF } = {}]: [
     ...Parameters<TestBody>,
     SessionOptions?,
   ]
@@ -114,6 +121,7 @@ async function startSession(
   on('process.run', (_, e) => {
     if (e.argv.includes('tree')) return { value: tree }
     if (e.argv.includes('config')) return { value: config }
+    if (e.argv.includes('diff')) return { value: diff }
     return { value: e.argv.includes('branches') ? BRANCHES : status }
   })
   on('tool.call', async () => {
@@ -344,6 +352,28 @@ test('should hide the files of a folder when its row is pressed, and show them w
   await pane.press({ key: 'src' })
 
   expect(await pane.find({ type: 'Text', text: /main\.rs/ })).toBeDefined()
+  await pane.unmount()
+})
+
+test('should open the file diff pane when a modified file is pressed', async ($, on) => {
+  const opened: string[] = []
+  await startSession($, on, { opened })
+  const pane = await $.ui.mount(TREE_PANE)
+
+  await pane.press({ key: 'src/main.rs' })
+
+  expect(opened.some(entry => entry.startsWith('terry-file-diff'))).toBe(true)
+  await pane.unmount()
+})
+
+test('should not open a diff when a clean file is pressed', async ($, on) => {
+  const opened: string[] = []
+  await startSession($, on, { opened })
+  const pane = await $.ui.mount(TREE_PANE)
+
+  await pane.press({ key: 'README.md' }).catch(() => undefined)
+
+  expect(opened.some(entry => entry.startsWith('terry-file-diff'))).toBe(false)
   await pane.unmount()
 })
 
