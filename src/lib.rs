@@ -29,3 +29,4 @@ pub mod stamp;
 pub mod terry_file;
 pub mod text;
 pub mod tree;
+pub mod upload;

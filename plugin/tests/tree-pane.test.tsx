@@ -72,6 +72,17 @@ const FILE_DIFF: ProcessRunResult = {
   ...ON,
   stdout: ['diff --git a/src/main.rs b/src/main.rs', '--- a/src/main.rs', '+++ b/src/main.rs', '@@ -1 +1 @@', '-old', '+new', ''].join('\n'),
 }
+/** What `terry upload` answers when the file landed in `src`. */
+const UPLOADED: ProcessRunResult = { ...ON, stdout: JSON.stringify({ ok: true, dest: 'src/shot.png' }) }
+/** The paste a terminal makes when a file of a Windows desktop is dropped on it. */
+const DROP = {
+  origin: { kind: 'composer' },
+  text: '',
+  cursor: 0,
+  start: 0,
+  end: 0,
+  inputText: '"D:\\Downloads\\shot.png"',
+} as const
 const BRANCHES: ProcessRunResult = { ...ON, stdout: 'main\ndev\n' }
 
 /** What `terry config` answers for these display settings. */
@@ -96,11 +107,17 @@ type SessionOptions = {
   logs?: string[]
   /** What `terry diff` answers. */
   diff?: ProcessRunResult
+  /** What `terry upload` answers. */
+  upload?: ProcessRunResult
+  /** Collects the argv of every `terry upload` call. */
+  uploads?: string[][]
+  /** Collects the argv of every process the plugin runs. */
+  calls?: string[][]
 }
 
 /** Starts the session with the files of a repo on `dev`. */
 async function startSession(
-  ...[$, on, { status = ON, panes = [], opened = [], tree = TREE, hold = Promise.resolve(), config = configOf(), logs = [], diff = FILE_DIFF } = {}]: [
+  ...[$, on, { status = ON, panes = [], opened = [], tree = TREE, hold = Promise.resolve(), config = configOf(), logs = [], diff = FILE_DIFF, upload = UPLOADED, uploads = [], calls = [] } = {}]: [
     ...Parameters<TestBody>,
     SessionOptions?,
   ]
@@ -118,7 +135,11 @@ async function startSession(
     return <Box />
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  // The engine's own edit: the typed or pasted text goes into the prompt box.
+  on('prompt.edit', (_, e) => ({ text: e.text + e.inputText, cursor: e.cursor + e.inputText.length }))
   on('process.run', (_, e) => {
+    calls.push([...e.argv])
+    if (e.argv.includes('upload')) return (uploads.push([...e.argv]), { value: upload })
     if (e.argv.includes('tree')) return { value: tree }
     if (e.argv.includes('config')) return { value: config }
     if (e.argv.includes('diff')) return { value: diff }
@@ -580,5 +601,117 @@ test('should leave the scroll place alone when the file Claude edits is in view'
 
   expect(await pane.find({ type: 'Text', text: /file-00\.rs/ })).toBeDefined()
   expect((await pane.find({ type: 'Text', text: /file-03\.rs/ }))?.props.color).toBe('claude')
+  await pane.unmount()
+})
+
+test('should ask which folder gets the file when a file is dropped on the terminal', async ($, on) => {
+  await startSession($, on)
+  const pane = await $.ui.mount(TREE_PANE)
+
+  await $.prompt.edit(DROP)
+
+  expect(await pane.find({ type: 'Text', text: /Upload shot\.png to:/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /repo root/ })).toBeDefined()
+  await pane.unmount()
+})
+
+test('should leave the prompt box as it was when a file is dropped', async ($, on) => {
+  await startSession($, on)
+
+  const result = await $.prompt.edit({ ...DROP, text: 'look at ', cursor: 8 })
+
+  expect(result).toEqual({ text: 'look at ', cursor: 8 })
+})
+
+test('should put the typed key in the prompt box when the edit is a key press', async ($, on) => {
+  await startSession($, on)
+
+  const result = await $.prompt.edit({ ...DROP, key: { key: 'a' }, text: 'hi', cursor: 2, inputText: 'a' })
+
+  expect(result).toEqual({ text: 'hia', cursor: 3 })
+})
+
+test('should ask for nothing when the user types a path key by key', async ($, on) => {
+  await startSession($, on)
+  const pane = await $.ui.mount(TREE_PANE)
+
+  await $.prompt.edit({ ...DROP, key: { key: '/' }, inputText: '/' })
+
+  expect(await pane.find({ type: 'Text', text: /Upload/ })).toBeUndefined()
+  await pane.unmount()
+})
+
+test('should upload the file into the folder and say so when a folder row is pressed after a drop', async ($, on) => {
+  const uploads: string[][] = []
+  await startSession($, on, { uploads })
+  const pane = await $.ui.mount(TREE_PANE)
+  await $.prompt.edit(DROP)
+
+  await pane.press({ key: 'src' })
+
+  expect(uploads).toEqual([['terry', 'upload', '"D:\\Downloads\\shot.png"', 'src']])
+  expect(await pane.find({ type: 'Text', text: /Uploaded src\/shot\.png/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /Upload shot\.png to:/ })).toBeUndefined()
+  await pane.unmount()
+})
+
+test('should keep the folder open when a folder row is pressed to receive a file', async ($, on) => {
+  await startSession($, on)
+  const pane = await $.ui.mount(TREE_PANE)
+  await $.prompt.edit(DROP)
+
+  await pane.press({ key: 'src' })
+
+  expect(await pane.find({ type: 'Text', text: /main\.rs/ })).toBeDefined()
+  await pane.unmount()
+})
+
+test('should upload to the repo root when the root button is pressed', async ($, on) => {
+  const uploads: string[][] = []
+  await startSession($, on, { uploads })
+  const pane = await $.ui.mount(TREE_PANE)
+  await $.prompt.edit(DROP)
+
+  await pane.press({ key: 'upload-root' })
+
+  expect(uploads.map(argv => argv.at(-1))).toEqual(['.'])
+  await pane.unmount()
+})
+
+test('should upload nothing and drop the prompt when Cancel is pressed', async ($, on) => {
+  const uploads: string[][] = []
+  await startSession($, on, { uploads })
+  const pane = await $.ui.mount(TREE_PANE)
+  await $.prompt.edit(DROP)
+
+  await pane.press({ key: 'upload-cancel' })
+
+  expect(uploads).toEqual([])
+  expect(await pane.find({ type: 'Text', text: /Upload shot\.png to:/ })).toBeUndefined()
+  await pane.unmount()
+})
+
+test('should show the error when terry upload fails', async ($, on) => {
+  const failed: ProcessRunResult = { ...ON, exitCode: 2, stdout: JSON.stringify({ ok: false, error: 'cannot read it from the desktop' }) }
+  await startSession($, on, { upload: failed })
+  const pane = await $.ui.mount(TREE_PANE)
+  await $.prompt.edit(DROP)
+
+  await pane.press({ key: 'src' })
+
+  expect(await pane.find({ type: 'Text', text: /Upload failed: cannot read it from the desktop/ })).toBeDefined()
+  await pane.unmount()
+})
+
+test('should read the tree again when an upload worked', async ($, on) => {
+  const calls: string[][] = []
+  await startSession($, on, { calls })
+  const pane = await $.ui.mount(TREE_PANE)
+  await $.prompt.edit(DROP)
+  const treeReadsBefore = calls.filter(argv => argv.includes('tree')).length
+
+  await pane.press({ key: 'src' })
+
+  expect(calls.filter(argv => argv.includes('tree')).length).toBeGreaterThan(treeReadsBefore)
   await pane.unmount()
 })
