@@ -227,6 +227,7 @@ that turn terry off or on in a folder keep the `display` section.
 | Yellow, green, red, cyan name | Modified, added, deleted, untracked. |
 | `M`, `A`, `D`, `?` right after the name | The same status, as a letter. |
 | Click on a changed file | Opens its diff against the same base, in a read-only "file diff" pane. `terry diff <file>` prints the same patch. |
+| `Upload x.png to:` above the files | A file was dropped on the terminal. Press a folder (or `[repo root]`) to put the file there, or `✕ Cancel`. See "Dropping a file into a folder". |
 | Bold | The change is not committed yet. |
 | Dim | A commit holds the change (dim yellow reads as grey), or the file did not change. |
 
@@ -237,8 +238,27 @@ ends. When the file is out of view, the tree scrolls to it (a file already in vi
 scroll place alone). The live marks cover Edit and Write only; a file that Claude creates has no
 row until its call ends, so until then only the top bar names it.
 
+### Dropping a file into a folder
+
+Drop a file from your desktop on the terminal. The terminal pastes its path, and terry takes the
+path out of the prompt box. The Files pane then shows `Upload <name> to:`. Press the folder that
+should get the file. The tree reads again, and the pane says where the file landed.
+
+`terry upload [--overwrite] [--from-user <name>] <file> <folder>` does the work, and prints JSON.
+The folder is a path from the repo root, and it must be inside the repo. A file that is already
+there is not replaced unless you pass `--overwrite`.
+
+- **In a local session** the file is copied from the path.
+- **In an SSH session** (`SSH_CONNECTION` is set) the path names a file on your desktop. terry
+  pulls it with `scp -s` from the machine the session came from, as the same user name unless you
+  pass `--from-user`. A Windows path (`D:\Downloads\a.png`) works too. This needs an SSH server
+  and a key login (no password prompt) on the desktop. If the pull fails, the pane shows the `scp`
+  command to run on the desktop instead.
+
 ## Limits
 
+- A drop of several files at once is not taken as an upload. The pane has no button to replace a
+  file that exists; run `terry upload --overwrite` for that.
 - Only commands **Claude** runs are gated. Commits you make in your own terminal are not.
 - The guards against Claude turning terry off read the command text. A hidden or encoded write
   to the approvals folder or the config file could get past them.

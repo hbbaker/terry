@@ -19,6 +19,8 @@ import {
   withoutFirst,
 } from './tree'
 import type { TreeMarks } from './tree'
+import { bannerRows, droppedPath, fitNote, noteRows, parseUpload, uploadMessage, uploadName } from './upload'
+import type { UploadResult } from './upload'
 
 const PANE = 'terry-diff'
 const PANE_TITLE = 'Diff review'
@@ -59,6 +61,11 @@ const MANIFEST_WAIT_MS = 95_000
 // How often the band asks `terry status`, so a `terry exclude` from any terminal shows soon.
 const GATE_POLL_MS = 15_000
 const GATE_STATUS_TIMEOUT_MS = 5_000
+// A file can be large and the desktop slow; `terry upload` itself gives up after 300 s.
+const UPLOAD_TIMEOUT_MS = 310_000
+// The repo root, as a folder argument of `terry upload`.
+const ROOT_FOLDER = '.'
+const CANCEL_MARK = '✕'
 // `terry status` exits 1 for an excluded folder; a child killed by a signal also reads as 1.
 const GATE_OFF_PREFIX = 'terry is off'
 // Columns between the art and the band's words, and the fewest the words need beside the art.
@@ -101,6 +108,8 @@ const diffRow = atom({ plugin: 'terry', key: 'diffRow' } as const, 0)
 const diffColumn = atom({ plugin: 'terry', key: 'diffColumn' } as const, 0)
 const fileDiff = atom({ plugin: 'terry', key: 'fileDiff' } as const, null)
 const fileDiffRow = atom({ plugin: 'terry', key: 'fileDiffRow' } as const, 0)
+const uploadSource = atom({ plugin: 'terry', key: 'uploadSource' } as const, null)
+const uploadNote = atom({ plugin: 'terry', key: 'uploadNote' } as const, null)
 
 async function diffsDir($: EngineInterface): Promise<string | null> {
   const home = await $.env.get('HOME')
@@ -265,6 +274,32 @@ function closeButton($: EngineInterface, paneId: string, Button: ReturnType<Engi
 /** The click on a folder: closes it, or opens it when it is closed. */
 async function toggleFolder($: EngineInterface, path: string): Promise<void> {
   await update($, collapsed, paths => (paths.includes(path) ? paths.filter(closed => closed !== path) : [...paths, path]))
+}
+
+/** `terry upload`: puts the file a drop named into a folder of the repo. */
+async function runUpload($: EngineInterface, source: string, folder: string): Promise<UploadResult> {
+  try {
+    const { stdout, stderr } = await $.process.run(['terry', 'upload', source, folder], { timeoutMs: UPLOAD_TIMEOUT_MS })
+    return parseUpload(stdout, stderr)
+  } catch {
+    // `terry` is not on PATH, or it did not finish in time.
+    return { ok: false, error: 'terry upload did not finish' }
+  }
+}
+
+/** The click on a folder (or the root) while a dropped file waits: uploads it there, then reads the tree. */
+async function uploadTo($: EngineInterface, folder: string): Promise<void> {
+  const source = await read($, uploadSource)
+  if (source === null) return
+  await update($, uploadSource, () => null)
+  const result = await runUpload($, source, folder)
+  await update($, uploadNote, () => uploadMessage(result))
+  if (result.ok) await refreshTree($)
+}
+
+/** The Cancel button: the dropped file is not uploaded. */
+async function cancelUpload($: EngineInterface): Promise<void> {
+  await update($, uploadSource, () => null)
 }
 
 /** The patch of one file by `terry diff`; null when it cannot be read. */
@@ -513,6 +548,19 @@ export const register: Register = (on, options) => {
     if ((await read($, gate)) === 'on') await $.ui.open(treePaneOpen(await read($, display)))
     $.clock.every(GATE_POLL_MS, () => refreshGate($))
     return next(e)
+  })
+
+  // A file dropped on the terminal arrives as one paste into the prompt box, not as key presses.
+  // The hook answers with the prompt as it was, so the path never lands in the box, and the Files
+  // pane asks which folder gets the file.
+  on('prompt.edit', async ($, e, next) => {
+    const result = await next(e)
+    const path = droppedPath(e)
+    if (path === null || (await read($, gate)) !== 'on') return result
+    await update($, uploadSource, () => path)
+    await update($, uploadNote, () => null)
+    await $.ui.open(treePaneOpen(await read($, display)))
+    return { text: e.text, cursor: e.cursor }
   })
 
   on('command.run', { command: COMMAND }, async $ => {
@@ -772,11 +820,15 @@ export const register: Register = (on, options) => {
       bodyColumns: columns,
       bodyRows: e.props.scroll.bodyRows,
     })
-    treeBarRows = bar.rows
+    // The upload banner sits under the top bar, so scrolling counts its rows as part of the bar.
+    const pendingSource = await read($, uploadSource)
+    const note = await read($, uploadNote)
+    const banner = bannerRows(pendingSource !== null, noteRows(note, columns))
+    treeBarRows = bar.rows + banner
     treeBodyRows = e.props.scroll.bodyRows
 
     const rows = snapshot === null ? [] : flattenRows(snapshot.nodes, marks.collapsed)
-    const windowRows = Math.max(1, e.props.scroll.bodyRows - bar.rows)
+    const windowRows = Math.max(1, e.props.scroll.bodyRows - treeBarRows)
     const first = Math.min(await read($, treeRow), lastOffset(rows.length, windowRows))
     const shown = rows.slice(first, first + windowRows)
 
@@ -834,6 +886,24 @@ export const register: Register = (on, options) => {
         <Text dimColor wrap="truncate-end">
           {'─'.repeat(columns)}
         </Text>
+        {pendingSource !== null && (
+          <Box flexDirection="column">
+            <Text bold color={settings.colors.claude} wrap="truncate-end">
+              {`Upload ${uploadName(pendingSource)} to:`}
+            </Text>
+            <Box flexDirection="row">
+              <Button key="upload-root" plain onPress={() => void uploadTo($, ROOT_FOLDER)}>
+                <Text>[repo root]</Text>
+              </Button>
+              <Box marginLeft={2}>
+                <Button key="upload-cancel" plain onPress={() => void cancelUpload($)}>
+                  <Text dimColor>{`${CANCEL_MARK} Cancel`}</Text>
+                </Button>
+              </Box>
+            </Box>
+          </Box>
+        )}
+        {note !== null && <Text dimColor>{fitNote(note, columns)}</Text>}
         {snapshot === null ? (
           <Text dimColor>No file tree yet.</Text>
         ) : (
@@ -861,8 +931,13 @@ export const register: Register = (on, options) => {
                 <Box flexDirection="row">
                   {guide}
                   <Box flexShrink={1}>
-                    {/* A click on a folder closes or opens it; Tab and Enter do the same. */}
-                    <Button key={row.path} plain onPress={() => void toggleFolder($, row.path)}>
+                    {/* A click on a folder closes or opens it; Tab and Enter do the same. While a
+                        dropped file waits, the click puts the file in the folder instead. */}
+                    <Button
+                      key={row.path}
+                      plain
+                      onPress={() => void (pendingSource !== null ? uploadTo($, row.path) : toggleFolder($, row.path))}
+                    >
                       <Text {...look.style} wrap="truncate-end">
                         {`${look.glyph}${label}`}
                       </Text>
