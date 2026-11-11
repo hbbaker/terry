@@ -109,6 +109,10 @@ declare module 'claude-code' {
       fileDiff: Review | null
       /** The file diff pane's own scroll place: the index of the first row it shows. */
       fileDiffRow: number
+      /** The path of a file the user dropped on the terminal, until they press a folder to put it in or cancel; null when none waits. */
+      uploadSource: string | null
+      /** What the last upload answered, shown in the Files pane; null before one ran, and after a new drop. */
+      uploadNote: string | null
     }
   }
 }
