@@ -61,6 +61,7 @@ these things outside the checkout:
 | `~/.claude/settings.json` | Adds two `PreToolUse` hooks that run the terry binary, and `ask` rules for commit and `gh pr`. A backup goes to `~/.claude/backups/` first. The file is written back with its keys in A–Z order. |
 | `~/.claude/settings.local.json` | Removes terry's hooks, if older installs wrote them there (they run a build folder path, run the gate a second time, and break at `cargo clean`). A backup goes to `~/.claude/backups/` first. Nothing else in the file changes. |
 | `~/.cargo/bin/terry` | The binary, put there by `cargo install`. See [Where terry installs](#where-terry-installs-and-why). |
+| `$(brew --prefix)/bin/terry` | A link to the binary, so `terry` works in a shell. Only with Homebrew, and only when nothing else is there. |
 | Claude Code plugins | Installs the `terry` pane plugin from `plugin/` in this folder. It removes the installed copy first, so Claude Code does not keep a stale cached one. |
 
 Run `./install.sh` again after a `git pull`. Use `./install.sh --no-plugin` to skip the pane.
@@ -68,15 +69,21 @@ Run `./install.sh` again after a `git pull`. Use `./install.sh --no-plugin` to s
 ### Where terry installs, and why
 
 The binary goes to `~/.cargo/bin/terry` (under `$CARGO_HOME`, or `$CARGO_INSTALL_ROOT` if you set
-it). Two things run `terry` by name, so the folder must be on your `PATH`: the pane plugin (it
-asks `terry status`, `terry tree` and more), and you, when you type `terry exclude`. The gate hooks
-in `~/.claude/settings.json` use the full path, so they do not depend on `PATH`.
+it). Claude Code does not need that folder on your `PATH`: the gate hooks in
+`~/.claude/settings.json` run the binary by its full path, and the pane plugin reads that same path
+from those hooks. So the hooks and the pane always run the same terry, and a new `./install.sh`
+moves both.
 
-Why `~/.cargo/bin`: Rust is already required, and rustup puts that folder on `PATH` for you. Older
-versions linked the binary into `~/.local/bin` instead. That folder is not on `PATH` by default on
+Only you need `terry` by name, when you type `terry exclude` or `terry status` in a shell.
+`~/.cargo/bin` is on `PATH` with rustup's Rust, but not with Homebrew's. So the installer links
+`$(brew --prefix)/bin/terry` to the binary: `/opt/homebrew/bin` on Apple silicon, `/usr/local/bin`
+on Intel. That folder is on `PATH` for anyone who uses brew, in bash or zsh, and it needs no
+`sudo`. A file there, or a link to another program, is left alone. Without Homebrew, the
+installer's last step names the line to add to `~/.zshrc` (zsh) or `~/.bash_profile` (bash).
+
+Older versions linked the binary into `~/.local/bin`. That folder is not on `PATH` by default on
 macOS, so the pane could not run `terry` and wrongly said "terry is off in this folder". If the
-pane says it cannot run `terry status`, the installer's last step names the folder to add: put
-`export PATH="$HOME/.cargo/bin:$PATH"` in `~/.zshrc` (or `~/.bashrc`), then open a new terminal.
+pane says it cannot run `terry status`, run `./install.sh` again.
 
 ## Uninstall
 
@@ -88,7 +95,8 @@ pane says it cannot run `terry status`, the installer's last step names the fold
 It reverses the install: it takes terry's hooks out of `~/.claude/settings.json` and
 `~/.claude/settings.local.json` (a backup of each goes to `~/.claude/backups/` first, and your other
 settings stay), removes the delta `include.path` from `~/.gitconfig`, uninstalls the pane plugin,
-and removes the binary. It also removes the `~/.local/bin/terry` link that older installs made, so
+removes the `$(brew --prefix)/bin/terry` link (only when it points at terry, or at nothing), and
+removes the binary. It also removes the `~/.local/bin/terry` link that older installs made, so
 an old install on your machine is cleaned up too. It keeps the lint tools and delta (you chose to
 install them), this checkout, and the `ask` rules for `git commit` and `gh pr` in `settings.json`:
 you may have had them before terry, so delete them by hand if you want them gone.
@@ -232,7 +240,8 @@ that turn terry off or on in a folder keep the `display` section.
   repo root, the branch, the ref the changes count from (`since`), and the files nested in
   folders, each with its status against that point and whether a commit landed it.
 - **Open the panes again:** `/terry` opens the "Files" pane, and the "Diff review" pane too when
-  a diff was reviewed.
+  a diff was reviewed. When terry cannot run, or is off in the folder, the pane opens without
+  files, and `/terry` answers "File tree opened, without files." with the reason.
 - **Approve or reject with the keyboard:** the pane takes the keys when it opens (unless you
   are typing). Press `y` to approve or `n` to reject. Arrows, Page Up/Down, Home and End scroll
   the diff, and `a` and `d` scroll it sideways (the ◀ and ▶ buttons do the same). Esc gives the
@@ -303,6 +312,12 @@ there is not replaced unless you pass `--overwrite`.
 - While Claude Code shows a dialog (the permission prompt, a question), the pane gets no
   mouse wheel or keys, and a pane open beside the prompt can garble the terminal. That is why
   the review happens in the pane first, and why Approve closes the pane.
+- Claude Code, not terry, decides where a pane goes. It docks the panes on the right only in
+  its fullscreen layout and in a terminal 110 columns or wider. Below 110 columns, or in the
+  main-screen layout (`CLAUDE_CODE_NO_FLICKER=0`, and tmux by default), a pane shows at the
+  bottom, above the prompt. A plugin cannot ask for the right side. To keep it there, start
+  Claude Code in the fullscreen layout (for example `"env": {"CLAUDE_CODE_NO_FLICKER": "1"}` in
+  `~/.claude/settings.json`) and keep the window 110 columns or wider.
 - The panes open without your request only in a terminal 144 columns or wider (110 once you
   have opened one with `/terry`); in a narrower one, run `/terry`. Claude Code docks a pane at
   most 45% of the width wide, and shows two open panes as tabs, not side by side: while you
