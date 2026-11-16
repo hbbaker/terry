@@ -71,3 +71,42 @@ fn should_quote_the_binary_path_when_it_has_a_space() {
 fn should_refuse_settings_that_are_not_an_object() {
     assert!(configure(&mut json!([]), Path::new("/t")).is_err());
 }
+
+#[test]
+fn should_restore_the_settings_it_found_when_unconfigured_after_configure() {
+    let original = json!({
+        "model": "opus",
+        "hooks": {"PreToolUse": [
+            {"matcher": "Read", "hooks": [{"type": "command", "command": "other-hook"}]}
+        ]},
+        "permissions": {"ask": ["Bash(rm *)"], "allow": ["Read"]}
+    });
+    let mut settings = original.clone();
+    configure(&mut settings, Path::new("/opt/terry/terry")).expect("configures");
+
+    let changed = unconfigure(&mut settings);
+
+    assert!(changed);
+    assert_eq!(settings, original);
+}
+
+#[test]
+fn should_drop_the_hooks_and_permissions_it_emptied_when_unconfigured() {
+    let mut settings = json!({"model": "opus"});
+    configure(&mut settings, Path::new("/opt/terry/terry")).expect("configures");
+
+    unconfigure(&mut settings);
+
+    assert_eq!(settings, json!({"model": "opus"}));
+}
+
+#[test]
+fn should_change_nothing_when_unconfigured_without_terry_settings() {
+    let original = json!({"hooks": {}, "permissions": {"ask": []}});
+    let mut settings = original.clone();
+
+    let changed = unconfigure(&mut settings);
+
+    assert!(!changed);
+    assert_eq!(settings, original);
+}

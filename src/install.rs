@@ -7,10 +7,12 @@
 //! 4. Points `~/.claude/settings.json` at this binary: two PreToolUse hooks and `ask` rules for
 //!    commit and `gh pr`. A backup goes to `~/.claude/backups/` first. The file is written
 //!    back with its keys in A-Z order (serde_json keeps no key order).
-//! 5. Links `~/.local/bin/terry` to this binary, so `terry exclude` works in any folder.
+//! 5. Checks that the binary's folder (`~/.cargo/bin`, where `install.sh` puts it) is on `PATH`,
+//!    and removes the `~/.local/bin/terry` link that older installs made.
 //! 6. Installs the terry pane plugin from `plugin/` (skip with `--no-plugin`).
 
 use std::env;
+use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -84,6 +86,141 @@ pub fn run(args: &[&str]) -> ExitCode {
     }
 }
 
+/// `terry uninstall [--purge]`: undoes `terry install`. The shell script `uninstall.sh` runs it,
+/// then removes the binary itself.
+pub fn run_uninstall(args: &[&str]) -> ExitCode {
+    let mut purge = false;
+    for arg in args {
+        match *arg {
+            "--purge" => purge = true,
+            other => {
+                eprintln!("unknown option: {other}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    match uninstall(purge) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("ERROR: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn uninstall(purge: bool) -> Result<(), String> {
+    step("Removing terry's hooks and rules from ~/.claude/settings.json");
+    unconfigure_claude_settings()?;
+
+    step("Removing the delta include from ~/.gitconfig");
+    remove_delta_include(&paths::checkout_dir().join("git").join("delta.gitconfig"))?;
+
+    step("Removing the terry pane plugin");
+    remove_plugin();
+
+    step("Removing the old ~/.local/bin/terry link");
+    if !remove_old_link()? {
+        println!("  ok: none found");
+    }
+
+    if purge {
+        step("Removing terry's exclude list and saved diffs");
+        purge_data()?;
+    } else {
+        println!(
+            "\nKept: the exclude list and saved diffs (run with --purge to remove them), and the\n\
+             lint tools and delta that install added."
+        );
+    }
+    Ok(())
+}
+
+fn unconfigure_claude_settings() -> Result<(), String> {
+    let path = paths::claude_settings_path();
+    if !path.exists() {
+        println!("  ok: no settings file");
+        return Ok(());
+    }
+    let text = fs::read_to_string(&path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let mut settings: Value = serde_json::from_str(&text)
+        .map_err(|error| format!("{} is not valid JSON: {error}", path.display()))?;
+    if !settings.is_object() || !unconfigure(&mut settings) {
+        println!("  ok: nothing of terry's in {}", path.display());
+        return Ok(());
+    }
+    let backup = back_up(&path)?;
+    let text = serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?;
+    fs::write(&path, text + "\n")
+        .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+    println!("  removed: terry's hooks and ask rules");
+    if let Some(backup) = backup {
+        println!("  settings backup: {}", backup.display());
+    }
+    Ok(())
+}
+
+fn remove_delta_include(include: &Path) -> Result<(), String> {
+    let include = include.display().to_string();
+    let status = Command::new("git")
+        .args([
+            "config",
+            "--global",
+            "--fixed-value",
+            "--unset-all",
+            "include.path",
+            &include,
+        ])
+        .status()
+        .map_err(|error| format!("cannot run git config: {error}"))?;
+    // git exits 5 when the key or value is not set.
+    match status.code() {
+        Some(0) => println!("  removed: include.path = {include}"),
+        Some(5) => println!("  ok: not included"),
+        _ => {
+            return Err(format!(
+                "`git config --global --unset-all include.path` failed ({status})"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Removal is best effort: a missing `claude`, or a plugin that is not installed, is not an error.
+fn remove_plugin() {
+    let commands: [&[&str]; 2] = [
+        &["plugin", "uninstall", "terry@terry"],
+        &["plugin", "marketplace", "remove", "terry"],
+    ];
+    for args in commands {
+        match Command::new("claude").args(args).status() {
+            Ok(status) if status.success() => println!("  ok: claude {}", args.join(" ")),
+            Ok(_) => println!(
+                "  skipped: `claude {}` did not succeed (not installed?)",
+                args.join(" ")
+            ),
+            Err(_) => println!("  skipped: the claude CLI is not on your PATH"),
+        }
+    }
+}
+
+fn purge_data() -> Result<(), String> {
+    let config = paths::config_path();
+    for path in [config.as_path(), paths::diffs_dir().as_path()] {
+        let result = if path.is_dir() {
+            fs::remove_dir_all(path)
+        } else {
+            fs::remove_file(path)
+        };
+        match result {
+            Ok(()) => println!("  removed: {}", path.display()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("cannot remove {}: {error}", path.display())),
+        }
+    }
+    Ok(())
+}
+
 fn install(options: &Options) -> Result<(), String> {
     let checkout = paths::checkout_dir();
     let binary = env::current_exe()
@@ -109,8 +246,9 @@ fn install(options: &Options) -> Result<(), String> {
     configure_claude_settings(&binary)?;
     smoke_test(&binary)?;
 
-    step("Putting terry on your PATH");
-    link_binary(&binary)?;
+    step("Checking that terry is on your PATH");
+    remove_old_link()?;
+    check_on_path(&binary);
 
     if options.plugin {
         step("Installing the terry pane plugin from this folder");
@@ -132,46 +270,44 @@ fn install(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
-/// Links `~/.local/bin/terry` to `binary`. A file there that is not a link is left alone.
-fn link_binary(binary: &Path) -> Result<(), String> {
-    let bin_dir = paths::home_dir().join(".local").join("bin");
-    let link = bin_dir.join("terry");
-    match fs::symlink_metadata(&link) {
-        Ok(meta) if !meta.file_type().is_symlink() => {
-            println!(
-                "  skipped: {} is a file, not a link; terry left it alone",
-                link.display()
-            );
-            return Ok(());
-        }
-        Ok(_) if fs::read_link(&link).is_ok_and(|target| target == binary) => {
-            println!("  ok: {} -> {}", link.display(), binary.display());
-        }
-        Ok(_) => {
-            fs::remove_file(&link)
-                .map_err(|error| format!("cannot replace {}: {error}", link.display()))?;
-            make_link(binary, &bin_dir, &link)?;
-        }
-        Err(_) => make_link(binary, &bin_dir, &link)?,
+/// Warns when the folder of `binary` is not on `PATH`: the pane plugin and `terry exclude` run
+/// `terry` by name. `cargo install` puts it in `~/.cargo/bin`, which rustup adds to `PATH`.
+fn check_on_path(binary: &Path) {
+    let Some(dir) = binary.parent() else { return };
+    if dir_on_path(dir, env::var_os("PATH").as_deref()) {
+        println!("  ok: {} is on your PATH", dir.display());
+        return;
     }
-    let on_path =
-        env::var_os("PATH").is_some_and(|path| env::split_paths(&path).any(|dir| dir == bin_dir));
-    if !on_path {
-        println!(
-            "  note: {} is not on your PATH; add it to use `terry exclude` by name",
-            bin_dir.display()
-        );
-    }
-    Ok(())
+    println!(
+        "  note: {} is not on your PATH, so the pane cannot find terry.\n\
+         \x20 Add this line to your shell's startup file (~/.zshrc or ~/.bashrc), then open a new terminal:\n\
+         \x20   export PATH=\"{}:$PATH\"",
+        dir.display(),
+        dir.display()
+    );
 }
 
-fn make_link(binary: &Path, bin_dir: &Path, link: &Path) -> Result<(), String> {
-    fs::create_dir_all(bin_dir)
-        .map_err(|error| format!("cannot create {}: {error}", bin_dir.display()))?;
-    std::os::unix::fs::symlink(binary, link)
-        .map_err(|error| format!("cannot link {}: {error}", link.display()))?;
-    println!("  linked: {} -> {}", link.display(), binary.display());
-    Ok(())
+fn dir_on_path(dir: &Path, path: Option<&OsStr>) -> bool {
+    path.is_some_and(|path| env::split_paths(path).any(|entry| entry == dir))
+}
+
+/// The link `~/.local/bin/terry` that older installs made. Returns true when it removed one. A
+/// regular file there is not terry's, so it stays.
+fn remove_old_link() -> Result<bool, String> {
+    let link = paths::home_dir().join(".local").join("bin").join("terry");
+    let Ok(meta) = fs::symlink_metadata(&link) else {
+        return Ok(false);
+    };
+    if !meta.file_type().is_symlink() {
+        println!(
+            "  skipped: {} is a file, not a link; terry left it alone",
+            link.display()
+        );
+        return Ok(false);
+    }
+    fs::remove_file(&link).map_err(|error| format!("cannot remove {}: {error}", link.display()))?;
+    println!("  removed: old link {}", link.display());
+    Ok(true)
 }
 
 fn step(title: &str) {
@@ -434,6 +570,74 @@ pub fn configure(settings: &mut Value, binary: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Removes terry's hooks and ask rules, and keeps every other setting. A list or object that
+/// this empties is removed too. Returns true when it changed anything.
+pub fn unconfigure(settings: &mut Value) -> bool {
+    let hooks_changed = remove_terry_hooks(settings);
+    let rules_changed = remove_terry_ask_rules(settings);
+    if hooks_changed {
+        drop_if_empty(settings, "hooks");
+    }
+    if rules_changed {
+        drop_if_empty(settings, "permissions");
+    }
+    hooks_changed || rules_changed
+}
+
+fn remove_terry_hooks(settings: &mut Value) -> bool {
+    let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return false;
+    };
+    let Some(pre_tool_use) = hooks.get_mut("PreToolUse").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let before = pre_tool_use.len();
+    pre_tool_use.retain(|entry| !is_terry_hook(entry));
+    let removed = pre_tool_use.len() != before;
+    if removed && pre_tool_use.is_empty() {
+        hooks.remove("PreToolUse");
+    }
+    removed
+}
+
+fn remove_terry_ask_rules(settings: &mut Value) -> bool {
+    let Some(permissions) = settings
+        .get_mut("permissions")
+        .and_then(Value::as_object_mut)
+    else {
+        return false;
+    };
+    let Some(ask) = permissions.get_mut("ask").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let before = ask.len();
+    ask.retain(|rule| {
+        !ASK_RULES
+            .iter()
+            .chain(RETIRED_ASK_RULES.iter())
+            .any(|terry_rule| rule == terry_rule)
+    });
+    let removed = ask.len() != before;
+    if removed && ask.is_empty() {
+        permissions.remove("ask");
+    }
+    removed
+}
+
+/// Removes `key` from the settings when it is an empty object, which terry's removal left behind.
+fn drop_if_empty(settings: &mut Value, key: &str) {
+    let Some(root) = settings.as_object_mut() else {
+        return;
+    };
+    if root
+        .get(key)
+        .and_then(Value::as_object)
+        .is_some_and(|object| object.is_empty())
+    {
+        root.remove(key);
+    }
+}
+
 /// Runs the installed Bash gate once on a harmless call: it must answer with no output.
 fn smoke_test(binary: &Path) -> Result<(), String> {
     let mut child = Command::new(binary)
@@ -460,4 +664,27 @@ fn smoke_test(binary: &Path) -> Result<(), String> {
     }
     println!("  ok: the gate runs");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::env;
+    use std::path::Path;
+
+    use super::dir_on_path;
+
+    #[test]
+    fn should_find_a_folder_that_is_on_path() {
+        let path = env::join_paths(["/usr/bin", "/home/a/.cargo/bin"]).expect("joins");
+
+        assert!(dir_on_path(Path::new("/home/a/.cargo/bin"), Some(&path)));
+    }
+
+    #[test]
+    fn should_not_find_a_folder_that_is_missing_from_path() {
+        let path = env::join_paths(["/usr/bin"]).expect("joins");
+
+        assert!(!dir_on_path(Path::new("/home/a/.local/bin"), Some(&path)));
+        assert!(!dir_on_path(Path::new("/home/a/.local/bin"), None));
+    }
 }

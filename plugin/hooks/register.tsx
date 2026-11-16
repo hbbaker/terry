@@ -68,6 +68,8 @@ const ROOT_FOLDER = '.'
 const CANCEL_MARK = '✕'
 // `terry status` exits 1 for an excluded folder; a child killed by a signal also reads as 1.
 const GATE_OFF_PREFIX = 'terry is off'
+// Shown while `terry status` cannot run at all, which is not the same as terry being off.
+const UNKNOWN_GATE_MESSAGE = 'Cannot run `terry status`. Check that `terry` is on your PATH, or run ./install.sh again.'
 // Columns between the art and the band's words, and the fewest the words need beside the art.
 const BAND_ART_GAP = 2
 const BAND_MIN_TEXT_COLUMNS = 30
@@ -792,7 +794,9 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: TREE_PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const settings = await read($, display)
-    if ((await read($, gate)) !== 'on') return <Text dimColor>{`${settings.name} is off in this folder.`}</Text>
+    const gateState = await read($, gate)
+    if (gateState === 'unknown') return <Text dimColor>{UNKNOWN_GATE_MESSAGE}</Text>
+    if (gateState === 'off') return <Text dimColor>{`${settings.name} is off in this folder.`}</Text>
     const current = await read($, review)
     const holding = isHolding(current)
     const chain = await read($, branchChain)
