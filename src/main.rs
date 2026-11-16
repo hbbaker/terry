@@ -11,6 +11,7 @@ use terry::{config, display, gate_bash, gate_edit, install, tree, upload};
 
 const USAGE: &str = "usage:
   terry install [--yes] [--no-plugin] set terry up on this machine
+  terry uninstall [--purge]           undo `terry install` (uninstall.sh runs this, then removes the binary)
   terry exclude [folder]              turn terry off in a folder (default: this one)
   terry include [folder]              turn terry on again in a folder
   terry status [folder]               exit 0 if terry is on in a folder, 1 if it is off
@@ -37,6 +38,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         ["install", options @ ..] => install::run(options),
+        ["uninstall", options @ ..] => install::run_uninstall(options),
         ["exclude", folder @ ..] => config::run(folder, true),
         ["include", folder @ ..] => config::run(folder, false),
         ["status", folder @ ..] => config::status(folder),

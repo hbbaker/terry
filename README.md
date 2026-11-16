@@ -51,18 +51,45 @@ cd ~/Projects/terry
 
 Then start a new Claude Code session, or run `/reload-plugins` in an open one.
 
-`install.sh` builds `target/release/terry` and runs `terry install`, which changes only these
-things outside the checkout:
+`install.sh` installs the binary with `cargo install` and runs `terry install`, which changes only
+these things outside the checkout:
 
 | What | Change |
 | --- | --- |
 | Missing lint tools and delta | Installs each one only after you say yes (brew, uv, pipx, apt and so on, whichever this machine has). `--yes` installs all of them without asking. |
 | `~/.gitconfig` | Adds `include.path` for `git/delta.gitconfig`. |
 | `~/.claude/settings.json` | Adds two `PreToolUse` hooks that run the terry binary, and `ask` rules for commit and `gh pr`. A backup goes to `~/.claude/backups/` first. The file is written back with its keys in A–Z order. |
-| `~/.local/bin/terry` | A link to the binary, so `terry exclude` works in any folder. |
+| `~/.cargo/bin/terry` | The binary, put there by `cargo install`. See [Where terry installs](#where-terry-installs-and-why). |
 | Claude Code plugins | Installs the `terry` pane plugin, read straight from `plugin/` in this folder. |
 
 Run `./install.sh` again after a `git pull`. Use `./install.sh --no-plugin` to skip the pane.
+
+### Where terry installs, and why
+
+The binary goes to `~/.cargo/bin/terry` (under `$CARGO_HOME`, or `$CARGO_INSTALL_ROOT` if you set
+it). Two things run `terry` by name, so the folder must be on your `PATH`: the pane plugin (it
+asks `terry status`, `terry tree` and more), and you, when you type `terry exclude`. The gate hooks
+in `~/.claude/settings.json` use the full path, so they do not depend on `PATH`.
+
+Why `~/.cargo/bin`: Rust is already required, and rustup puts that folder on `PATH` for you. Older
+versions linked the binary into `~/.local/bin` instead. That folder is not on `PATH` by default on
+macOS, so the pane could not run `terry` and wrongly said "terry is off in this folder". If the
+pane says it cannot run `terry status`, the installer's last step names the folder to add: put
+`export PATH="$HOME/.cargo/bin:$PATH"` in `~/.zshrc` (or `~/.bashrc`), then open a new terminal.
+
+## Uninstall
+
+```sh
+./uninstall.sh            # remove terry, so ./install.sh can start from scratch
+./uninstall.sh --purge    # also remove the exclude list and the saved diffs
+```
+
+It reverses the install: it takes terry's hooks and `ask` rules out of `~/.claude/settings.json`
+(a backup goes to `~/.claude/backups/` first, and your other settings stay), removes the delta
+`include.path` from `~/.gitconfig`, uninstalls the pane plugin, and removes the binary. It also
+removes the `~/.local/bin/terry` link that older installs made, so an old install on your machine
+is cleaned up too. It keeps the lint tools and delta (you chose to install them), and this
+checkout. Run it as often as you like: a step that has nothing to do says so.
 
 ## How it works
 
@@ -102,6 +129,7 @@ open again beside the prompt and a line under it that says the diff was not appr
 | `tests/` | The gate tests, against throwaway git repos, and unit tests for the parser, the patterns and the branch chain. |
 | `lint/` | The fallback ESLint config, for repos with no ESLint of their own on this machine. |
 | `plugin/` | The Claude Code mod that draws the pane. |
+| `install.sh`, `uninstall.sh` | Set terry up on this machine, and take it off again. |
 | `git/` | delta's colors. |
 
 Each linter uses the repo's own install and config first (`.venv/bin/ruff`, `.venv/bin/black`,
