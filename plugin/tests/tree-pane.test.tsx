@@ -334,6 +334,16 @@ test('should lay a file row out flat, so the names line up whatever the mark is'
   await pane.unmount()
 })
 
+test('should say terry cannot run, not that it is off, when terry status fails', async ($, on) => {
+  await startSession($, on, { status: { ...ON, exitCode: 2, stdout: '' } })
+
+  const pane = await $.ui.mount(TREE_PANE)
+
+  expect(await pane.find({ type: 'Text', text: /^Cannot run `terry status`/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'Terry is off in this folder.' })).toBeUndefined()
+  await pane.unmount()
+})
+
 test('should say terry is off when the folder is excluded', async ($, on) => {
   await startSession($, on, { status: OFF })
 
