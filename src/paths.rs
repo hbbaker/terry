@@ -30,6 +30,10 @@ pub fn claude_settings_path() -> PathBuf {
     claude_dir().join("settings.json")
 }
 
+pub fn claude_settings_local_path() -> PathBuf {
+    claude_dir().join("settings.local.json")
+}
+
 /// terry's own config: `$XDG_CONFIG_HOME/terry/config.json`, else `~/.config/terry/config.json`.
 pub fn config_path() -> PathBuf {
     env::var_os("XDG_CONFIG_HOME")

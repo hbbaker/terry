@@ -73,39 +73,47 @@ fn should_refuse_settings_that_are_not_an_object() {
 }
 
 #[test]
-fn should_restore_the_settings_it_found_when_unconfigured_after_configure() {
-    let original = json!({
+fn should_remove_only_terry_hooks_and_keep_ask_rules_when_hooks_are_removed() {
+    let mut settings = json!({
         "model": "opus",
         "hooks": {"PreToolUse": [
             {"matcher": "Read", "hooks": [{"type": "command", "command": "other-hook"}]}
         ]},
         "permissions": {"ask": ["Bash(rm *)"], "allow": ["Read"]}
     });
-    let mut settings = original.clone();
     configure(&mut settings, Path::new("/opt/terry/terry")).expect("configures");
+    let ask_rules = settings["permissions"]["ask"].clone();
 
-    let changed = unconfigure(&mut settings);
+    let changed = remove_hooks(&mut settings);
 
     assert!(changed);
-    assert_eq!(settings, original);
+    assert_eq!(
+        settings["hooks"]["PreToolUse"],
+        json!([{"matcher": "Read", "hooks": [{"type": "command", "command": "other-hook"}]}])
+    );
+    assert_eq!(settings["permissions"]["ask"], ask_rules);
+    assert_eq!(settings["model"], "opus");
 }
 
 #[test]
-fn should_drop_the_hooks_and_permissions_it_emptied_when_unconfigured() {
-    let mut settings = json!({"model": "opus"});
-    configure(&mut settings, Path::new("/opt/terry/terry")).expect("configures");
+fn should_remove_hooks_that_run_a_build_folder_binary() {
+    let mut settings = json!({"hooks": {"PreToolUse": [
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": "/home/a/Projects/terry/target/release/terry gate bash", "timeout": 90}]},
+        {"matcher": "Edit", "hooks": [{"type": "command", "command": "/home/a/Projects/terry/target/release/terry gate edit", "timeout": 10}]}
+    ]}, "enabledPlugins": {"terry@terry": true}});
 
-    unconfigure(&mut settings);
+    let changed = remove_hooks(&mut settings);
 
-    assert_eq!(settings, json!({"model": "opus"}));
+    assert!(changed);
+    assert_eq!(settings, json!({"enabledPlugins": {"terry@terry": true}}));
 }
 
 #[test]
-fn should_change_nothing_when_unconfigured_without_terry_settings() {
-    let original = json!({"hooks": {}, "permissions": {"ask": []}});
+fn should_change_nothing_when_hooks_are_removed_and_there_are_no_terry_hooks() {
+    let original = json!({"hooks": {}, "permissions": {"ask": ["Bash(git commit *)"]}});
     let mut settings = original.clone();
 
-    let changed = unconfigure(&mut settings);
+    let changed = remove_hooks(&mut settings);
 
     assert!(!changed);
     assert_eq!(settings, original);
