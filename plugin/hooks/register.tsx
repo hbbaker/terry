@@ -7,6 +7,7 @@ import { fitFiles, splitPatch } from './patch'
 import { buildRows, lastColumn, toBlocks } from './rows'
 import type { Row } from './rows'
 import { lastOffset, nextColumn, nextOffset } from './scroll'
+import { FALLBACK_BINARY, binaryFromSettings } from './binary'
 import { DEFAULT_DISPLAY, branchColor, parseDisplay } from './settings'
 import {
   TOP_BAR_ART_GAP,
@@ -69,7 +70,8 @@ const CANCEL_MARK = '✕'
 // `terry status` exits 1 for an excluded folder; a child killed by a signal also reads as 1.
 const GATE_OFF_PREFIX = 'terry is off'
 // Shown while `terry status` cannot run at all, which is not the same as terry being off.
-const UNKNOWN_GATE_MESSAGE = 'Cannot run `terry status`. Check that `terry` is on your PATH, or run ./install.sh again.'
+const UNKNOWN_GATE_MESSAGE =
+  'Cannot run `terry status`. Run ./install.sh again, so the hooks in ~/.claude/settings.json name the terry binary.'
 // Columns between the art and the band's words, and the fewest the words need beside the art.
 const BAND_ART_GAP = 2
 const BAND_MIN_TEXT_COLUMNS = 30
@@ -97,6 +99,7 @@ type CallManifest = {
 const review = atom({ plugin: 'terry', key: 'review' } as const, null)
 const promptReviewFor = atom({ plugin: 'terry', key: 'promptReviewFor' } as const, null)
 const gate = atom({ plugin: 'terry', key: 'gate' } as const, 'unknown')
+const binary = atom({ plugin: 'terry', key: 'binary' } as const, FALLBACK_BINARY as string)
 const branchChain = atom({ plugin: 'terry', key: 'branchChain' } as const, [])
 // The name, colours and width come from `terry config` (the config file's `display` section).
 const display = atom({ plugin: 'terry', key: 'display' } as const, DEFAULT_DISPLAY)
@@ -281,10 +284,10 @@ async function toggleFolder($: EngineInterface, path: string): Promise<void> {
 /** `terry upload`: puts the file a drop named into a folder of the repo. */
 async function runUpload($: EngineInterface, source: string, folder: string): Promise<UploadResult> {
   try {
-    const { stdout, stderr } = await $.process.run(['terry', 'upload', source, folder], { timeoutMs: UPLOAD_TIMEOUT_MS })
+    const { stdout, stderr } = await $.process.run([await read($, binary), 'upload', source, folder], { timeoutMs: UPLOAD_TIMEOUT_MS })
     return parseUpload(stdout, stderr)
   } catch {
-    // `terry` is not on PATH, or it did not finish in time.
+    // The binary cannot be run, or it did not finish in time.
     return { ok: false, error: 'terry upload did not finish' }
   }
 }
@@ -307,12 +310,12 @@ async function cancelUpload($: EngineInterface): Promise<void> {
 /** The patch of one file by `terry diff`; null when it cannot be read. */
 async function readFileDiff($: EngineInterface, path: string): Promise<string | null> {
   try {
-    const { exitCode, stdout, isStdoutTruncated } = await $.process.run(['terry', 'diff', path], {
+    const { exitCode, stdout, isStdoutTruncated } = await $.process.run([await read($, binary), 'diff', path], {
       timeoutMs: TREE_TIMEOUT_MS,
     })
     return exitCode === 0 && !isStdoutTruncated ? stdout : null
   } catch {
-    // `terry` is not on PATH, or it did not finish in time.
+    // The binary cannot be run, or it did not finish in time.
     return null
   }
 }
@@ -356,10 +359,10 @@ function treePaneOpen(settings: DisplaySettings) {
 /** The display settings by `terry config`; null when it cannot be read. */
 async function readDisplay($: EngineInterface): Promise<DisplaySettings | null> {
   try {
-    const { exitCode, stdout } = await $.process.run(['terry', 'config'], { timeoutMs: GATE_STATUS_TIMEOUT_MS })
+    const { exitCode, stdout } = await $.process.run([await read($, binary), 'config'], { timeoutMs: GATE_STATUS_TIMEOUT_MS })
     return exitCode === 0 ? parseDisplay(stdout) : null
   } catch {
-    // `terry` is not on PATH, or it did not finish in time.
+    // The binary cannot be run, or it did not finish in time.
     return null
   }
 }
@@ -382,12 +385,12 @@ async function refreshDisplay($: EngineInterface): Promise<void> {
 /** The repo's file tree by `terry tree`; null when it cannot be read. */
 async function readTree($: EngineInterface): Promise<TreeSnapshot | null> {
   try {
-    const { exitCode, stdout, isStdoutTruncated } = await $.process.run(['terry', 'tree'], {
+    const { exitCode, stdout, isStdoutTruncated } = await $.process.run([await read($, binary), 'tree'], {
       timeoutMs: TREE_TIMEOUT_MS,
     })
     return exitCode === 0 && !isStdoutTruncated ? parseTree(stdout) : null
   } catch {
-    // `terry` is not on PATH, or it did not finish in time.
+    // The binary cannot be run, or it did not finish in time.
     return null
   }
 }
@@ -454,14 +457,39 @@ async function whileEditing<T>($: EngineInterface, filePath: string, run: () => 
   }
 }
 
+/**
+ * The binary the gate's hooks run, read from `~/.claude/settings.json`, where `terry install`
+ * writes it; the pane then runs the same terry and does not need it on PATH. `terry` (looked up
+ * on PATH) when no hook names one, or the file it names is gone.
+ */
+async function readBinary($: EngineInterface): Promise<string> {
+  try {
+    const home = await $.env.get('HOME')
+    if (!home) return FALLBACK_BINARY
+    const settingsPath = `${home}/.claude/settings.json`
+    if (!(await $.fs.exists(settingsPath))) return FALLBACK_BINARY
+    const path = binaryFromSettings(await $.fs.read(settingsPath))
+    return path !== null && (await $.fs.exists(path)) ? path : FALLBACK_BINARY
+  } catch {
+    // The settings cannot be read.
+    return FALLBACK_BINARY
+  }
+}
+
+/** Reads the binary again, so a new `./install.sh` shows without a restart. */
+async function refreshBinary($: EngineInterface): Promise<void> {
+  const path = await readBinary($)
+  await update($, binary, () => path)
+}
+
 async function readGateState($: EngineInterface): Promise<GateState> {
   try {
-    const { exitCode, stdout } = await $.process.run(['terry', 'status'], { timeoutMs: GATE_STATUS_TIMEOUT_MS })
+    const { exitCode, stdout } = await $.process.run([await read($, binary), 'status'], { timeoutMs: GATE_STATUS_TIMEOUT_MS })
     if (exitCode === 0) return 'on'
     if (exitCode === 1 && stdout.startsWith(GATE_OFF_PREFIX)) return 'off'
     return 'unknown'
   } catch {
-    // `terry` is not on PATH, or it did not finish in time.
+    // The binary cannot be run, or it did not finish in time.
     return 'unknown'
   }
 }
@@ -469,11 +497,11 @@ async function readGateState($: EngineInterface): Promise<GateState> {
 /** The branch chain of the session's folder, by `terry branches`; empty when it cannot be read. */
 async function readBranchChain($: EngineInterface): Promise<string[]> {
   try {
-    const { exitCode, stdout } = await $.process.run(['terry', 'branches'], { timeoutMs: GATE_STATUS_TIMEOUT_MS })
+    const { exitCode, stdout } = await $.process.run([await read($, binary), 'branches'], { timeoutMs: GATE_STATUS_TIMEOUT_MS })
     if (exitCode !== 0) return []
     return stdout.split('\n').filter(branch => branch !== '')
   } catch {
-    // `terry` is not on PATH, or it did not finish in time.
+    // The binary cannot be run, or it did not finish in time.
     return []
   }
 }
@@ -484,6 +512,7 @@ async function refreshBranchChain($: EngineInterface): Promise<void> {
 }
 
 async function refreshGate($: EngineInterface): Promise<void> {
+  await refreshBinary($)
   const state = await readGateState($)
   await update($, gate, () => state)
   await refreshDisplay($)
@@ -539,6 +568,7 @@ export const register: Register = (on, options) => {
     // A reload while a call ran leaves its file marked active; nothing is running now.
     await update($, claudeActive, () => [])
     await update($, claudeLast, () => null)
+    await refreshBinary($)
     await refreshDisplay($)
     const settings = await read($, display)
     await $.command.register({
@@ -566,9 +596,15 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: COMMAND }, async $ => {
+    // Asks again, so a fix since the last poll (a new ./install.sh) shows at once.
+    await refreshGate($)
     const settings = await read($, display)
     await $.ui.open(treePaneOpen(settings))
     if ((await read($, review)) === null) {
+      // The pane opens either way, to show why it has no files; the answer must not say otherwise.
+      const gateState = await read($, gate)
+      if (gateState === 'unknown') return { text: `File tree opened, without files. ${UNKNOWN_GATE_MESSAGE}` }
+      if (gateState === 'off') return { text: `File tree opened, without files. ${settings.name} is off in this folder.` }
       return { text: `File tree opened. ${settings.name} has not reviewed a diff in this session yet.` }
     }
     await $.ui.open({ id: PANE, title: PANE_TITLE })
