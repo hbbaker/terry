@@ -5,7 +5,8 @@
 //!    command for this system and asks; `--yes` installs without asking.
 //! 3. Adds `git/delta.gitconfig` to `~/.gitconfig` with an `include.path`.
 //! 4. Points `~/.claude/settings.json` at this binary: two PreToolUse hooks and `ask` rules for
-//!    commit and `gh pr`. A backup goes to `~/.claude/backups/` first. The file is written
+//!    commit and `gh pr`. It removes terry's hooks from `~/.claude/settings.local.json`, where
+//!    older installs wrote them. A backup goes to `~/.claude/backups/` first. The file is written
 //!    back with its keys in A-Z order (serde_json keeps no key order).
 //! 5. Checks that the binary's folder (`~/.cargo/bin`, where `install.sh` puts it) is on `PATH`,
 //!    and removes the `~/.local/bin/terry` link that older installs made.
@@ -109,8 +110,9 @@ pub fn run_uninstall(args: &[&str]) -> ExitCode {
 }
 
 fn uninstall(purge: bool) -> Result<(), String> {
-    step("Removing terry's hooks and rules from ~/.claude/settings.json");
-    unconfigure_claude_settings()?;
+    step("Removing terry's hooks from the Claude Code settings files");
+    remove_hooks_from(&paths::claude_settings_path())?;
+    remove_hooks_from(&paths::claude_settings_local_path())?;
 
     step("Removing the delta include from ~/.gitconfig");
     remove_delta_include(&paths::checkout_dir().join("git").join("delta.gitconfig"))?;
@@ -128,32 +130,34 @@ fn uninstall(purge: bool) -> Result<(), String> {
         purge_data()?;
     } else {
         println!(
-            "\nKept: the exclude list and saved diffs (run with --purge to remove them), and the\n\
-             lint tools and delta that install added."
+            "\nKept: the exclude list and saved diffs (run with --purge to remove them), the lint\n\
+             tools and delta that install added, and the `ask` rules in settings.json (they may be\n\
+             yours; delete `git commit` and `gh pr` rules there by hand if you want them gone)."
         );
     }
     Ok(())
 }
 
-fn unconfigure_claude_settings() -> Result<(), String> {
-    let path = paths::claude_settings_path();
+/// Takes terry's hooks out of one Claude Code settings file, after a backup. A missing file, or a
+/// file with no terry hook, is left alone.
+fn remove_hooks_from(path: &Path) -> Result<(), String> {
     if !path.exists() {
-        println!("  ok: no settings file");
+        println!("  ok: no {}", path.display());
         return Ok(());
     }
-    let text = fs::read_to_string(&path)
+    let text = fs::read_to_string(path)
         .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     let mut settings: Value = serde_json::from_str(&text)
         .map_err(|error| format!("{} is not valid JSON: {error}", path.display()))?;
-    if !settings.is_object() || !unconfigure(&mut settings) {
-        println!("  ok: nothing of terry's in {}", path.display());
+    if !settings.is_object() || !remove_hooks(&mut settings) {
+        println!("  ok: no terry hooks in {}", path.display());
         return Ok(());
     }
-    let backup = back_up(&path)?;
+    let backup = back_up(path)?;
     let text = serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?;
-    fs::write(&path, text + "\n")
+    fs::write(path, text + "\n")
         .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
-    println!("  removed: terry's hooks and ask rules");
+    println!("  removed: terry's hooks from {}", path.display());
     if let Some(backup) = backup {
         println!("  settings backup: {}", backup.display());
     }
@@ -186,22 +190,20 @@ fn remove_delta_include(include: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Removal is best effort: a missing `claude`, or a plugin that is not installed, is not an error.
-fn remove_plugin() {
-    let commands: [&[&str]; 2] = [
-        &["plugin", "uninstall", "terry@terry"],
-        &["plugin", "marketplace", "remove", "terry"],
-    ];
-    for args in commands {
-        match Command::new("claude").args(args).status() {
-            Ok(status) if status.success() => println!("  ok: claude {}", args.join(" ")),
-            Ok(_) => println!(
-                "  skipped: `claude {}` did not succeed (not installed?)",
-                args.join(" ")
-            ),
-            Err(_) => println!("  skipped: the claude CLI is not on your PATH"),
-        }
+/// Runs `claude` with `args`, for a step that is not an error when it does not work: a missing
+/// `claude`, or a plugin that is not installed. It says what happened.
+fn run_claude(args: &[&str]) {
+    let shown = args.join(" ");
+    match Command::new("claude").args(args).status() {
+        Ok(status) if status.success() => println!("  ok: claude {shown}"),
+        Ok(_) => println!("  skipped: `claude {shown}` did not succeed (not installed?)"),
+        Err(_) => println!("  skipped: the claude CLI is not on your PATH"),
     }
+}
+
+fn remove_plugin() {
+    run_claude(&["plugin", "uninstall", "terry@terry"]);
+    run_claude(&["plugin", "marketplace", "remove", "terry"]);
 }
 
 fn purge_data() -> Result<(), String> {
@@ -244,6 +246,9 @@ fn install(options: &Options) -> Result<(), String> {
 
     step("Pointing Claude Code at the gate");
     configure_claude_settings(&binary)?;
+    // Older installs wrote the hooks to settings.local.json, with the path of a build folder.
+    // They would run the gate a second time, and break at the next `cargo clean`.
+    remove_hooks_from(&paths::claude_settings_local_path())?;
     smoke_test(&binary)?;
 
     step("Checking that terry is on your PATH");
@@ -252,6 +257,9 @@ fn install(options: &Options) -> Result<(), String> {
 
     if options.plugin {
         step("Installing the terry pane plugin from this folder");
+        // Claude Code keeps a cached copy of the plugin and may not refresh it on an install,
+        // so a changed plugin/ could stay unloaded. Start from no copy.
+        run_claude(&["plugin", "uninstall", "terry@terry", "--keep-data"]);
         let status = Command::new("claude")
             .args(["plugin", "install", "terry", "--marketplace"])
             .arg(&checkout)
@@ -505,7 +513,12 @@ fn back_up(settings: &Path) -> Result<Option<PathBuf>, String> {
     let dir = paths::claude_dir().join("backups");
     fs::create_dir_all(&dir)
         .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
-    let backup = dir.join(format!("settings.json.bak-terry-{}", stamp::utc_stamp()));
+    let name = settings
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "settings.json".to_owned());
+    // Named after the file, so two files backed up in the same second keep separate copies.
+    let backup = dir.join(format!("{name}.bak-terry-{}", stamp::utc_stamp()));
     fs::copy(settings, &backup).map_err(|error| format!("cannot back up the settings: {error}"))?;
     Ok(Some(backup))
 }
@@ -570,18 +583,15 @@ pub fn configure(settings: &mut Value, binary: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Removes terry's hooks and ask rules, and keeps every other setting. A list or object that
-/// this empties is removed too. Returns true when it changed anything.
-pub fn unconfigure(settings: &mut Value) -> bool {
-    let hooks_changed = remove_terry_hooks(settings);
-    let rules_changed = remove_terry_ask_rules(settings);
-    if hooks_changed {
+/// Removes terry's hooks, and keeps every other setting. A `hooks` object that this empties is
+/// removed too. Returns true when it removed a hook. The ask rules stay: they may be the user's
+/// own, and `configure` adds one only when it is missing, so terry cannot tell who owns it.
+pub fn remove_hooks(settings: &mut Value) -> bool {
+    let removed = remove_terry_hooks(settings);
+    if removed {
         drop_if_empty(settings, "hooks");
     }
-    if rules_changed {
-        drop_if_empty(settings, "permissions");
-    }
-    hooks_changed || rules_changed
+    removed
 }
 
 fn remove_terry_hooks(settings: &mut Value) -> bool {
@@ -596,30 +606,6 @@ fn remove_terry_hooks(settings: &mut Value) -> bool {
     let removed = pre_tool_use.len() != before;
     if removed && pre_tool_use.is_empty() {
         hooks.remove("PreToolUse");
-    }
-    removed
-}
-
-fn remove_terry_ask_rules(settings: &mut Value) -> bool {
-    let Some(permissions) = settings
-        .get_mut("permissions")
-        .and_then(Value::as_object_mut)
-    else {
-        return false;
-    };
-    let Some(ask) = permissions.get_mut("ask").and_then(Value::as_array_mut) else {
-        return false;
-    };
-    let before = ask.len();
-    ask.retain(|rule| {
-        !ASK_RULES
-            .iter()
-            .chain(RETIRED_ASK_RULES.iter())
-            .any(|terry_rule| rule == terry_rule)
-    });
-    let removed = ask.len() != before;
-    if removed && ask.is_empty() {
-        permissions.remove("ask");
     }
     removed
 }
