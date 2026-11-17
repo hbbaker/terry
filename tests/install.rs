@@ -118,3 +118,126 @@ fn should_change_nothing_when_hooks_are_removed_and_there_are_no_terry_hooks() {
     assert!(!changed);
     assert_eq!(settings, original);
 }
+
+/// A throwaway folder with an executable `cargo/terry` and an empty `brew/bin`.
+struct LinkFixture {
+    base: std::path::PathBuf,
+    binary: std::path::PathBuf,
+    bin: std::path::PathBuf,
+}
+
+impl LinkFixture {
+    fn new(name: &str) -> Self {
+        let base = std::env::temp_dir().join(format!("terry-link-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let bin = base.join("brew").join("bin");
+        std::fs::create_dir_all(&bin).expect("makes the bin folder");
+        std::fs::create_dir_all(base.join("cargo")).expect("makes the cargo folder");
+        let binary = base.join("cargo").join("terry");
+        std::fs::write(&binary, "#!/bin/sh\n").expect("writes the binary");
+        let binary = binary.canonicalize().expect("resolves the binary");
+        LinkFixture { base, binary, bin }
+    }
+
+    fn link(&self) -> std::path::PathBuf {
+        self.bin.join("terry")
+    }
+}
+
+impl Drop for LinkFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.base);
+    }
+}
+
+#[test]
+fn should_link_the_binary_into_an_empty_bin_folder() {
+    let fixture = LinkFixture::new("empty");
+
+    let line = link_binary(&fixture.bin, &fixture.binary).expect("links");
+
+    assert!(line.starts_with("linked: "), "{line}");
+    assert_eq!(
+        std::fs::read_link(fixture.link()).expect("a link"),
+        fixture.binary
+    );
+    assert_eq!(
+        link_state(&fixture.link(), &fixture.binary),
+        LinkState::Ours
+    );
+}
+
+#[test]
+fn should_leave_its_own_link_alone_when_run_again() {
+    let fixture = LinkFixture::new("again");
+    link_binary(&fixture.bin, &fixture.binary).expect("links");
+
+    let line = link_binary(&fixture.bin, &fixture.binary).expect("links again");
+
+    assert!(line.starts_with("ok: "), "{line}");
+}
+
+#[test]
+fn should_replace_a_dangling_link() {
+    let fixture = LinkFixture::new("dangling");
+    std::os::unix::fs::symlink(fixture.base.join("gone"), fixture.link())
+        .expect("makes a dangling link");
+    assert_eq!(
+        link_state(&fixture.link(), &fixture.binary),
+        LinkState::Dangling
+    );
+
+    link_binary(&fixture.bin, &fixture.binary).expect("links");
+
+    assert_eq!(
+        link_state(&fixture.link(), &fixture.binary),
+        LinkState::Ours
+    );
+}
+
+#[test]
+fn should_not_touch_a_file_or_a_link_to_another_program() {
+    let fixture = LinkFixture::new("other");
+    let other = fixture.base.join("other-terry");
+    std::fs::write(&other, "other").expect("writes another program");
+    std::os::unix::fs::symlink(&other, fixture.link()).expect("links the other program");
+
+    let line = link_binary(&fixture.bin, &fixture.binary).expect("answers");
+    assert!(line.starts_with("skipped: "), "{line}");
+    let line = unlink_binary(&fixture.bin, &fixture.binary).expect("answers");
+    assert!(line.starts_with("skipped: "), "{line}");
+    assert_eq!(
+        std::fs::read_link(fixture.link()).expect("still a link"),
+        other
+    );
+
+    std::fs::remove_file(fixture.link()).expect("removes the link");
+    std::fs::write(fixture.link(), "a real file").expect("writes a file");
+    assert_eq!(
+        link_state(&fixture.link(), &fixture.binary),
+        LinkState::Other
+    );
+    unlink_binary(&fixture.bin, &fixture.binary).expect("answers");
+    assert!(fixture.link().is_file());
+}
+
+#[test]
+fn should_remove_its_own_link_and_a_dangling_one() {
+    let fixture = LinkFixture::new("unlink");
+    link_binary(&fixture.bin, &fixture.binary).expect("links");
+
+    let line = unlink_binary(&fixture.bin, &fixture.binary).expect("unlinks");
+    assert!(line.starts_with("removed: "), "{line}");
+    assert_eq!(
+        link_state(&fixture.link(), &fixture.binary),
+        LinkState::Missing
+    );
+
+    std::os::unix::fs::symlink(fixture.base.join("gone"), fixture.link())
+        .expect("makes a dangling link");
+    unlink_binary(&fixture.bin, &fixture.binary).expect("unlinks");
+    assert_eq!(
+        link_state(&fixture.link(), &fixture.binary),
+        LinkState::Missing
+    );
+}

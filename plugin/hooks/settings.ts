@@ -1,7 +1,7 @@
 import type { DisplaySettings, Palette } from '../types'
 
 /**
- * What the pane uses when `terry config` cannot be read (`terry` is not on the PATH, or it is an
+ * What the pane uses when `terry config` cannot be read (the binary cannot be run, or it is an
  * old build). They mirror `Display::default` in src/display.rs: change both together.
  */
 export const DEFAULT_DISPLAY: DisplaySettings = {

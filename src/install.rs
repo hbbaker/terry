@@ -8,12 +8,13 @@
 //!    commit and `gh pr`. It removes terry's hooks from `~/.claude/settings.local.json`, where
 //!    older installs wrote them. A backup goes to `~/.claude/backups/` first. The file is written
 //!    back with its keys in A-Z order (serde_json keeps no key order).
-//! 5. Checks that the binary's folder (`~/.cargo/bin`, where `install.sh` puts it) is on `PATH`,
-//!    and removes the `~/.local/bin/terry` link that older installs made.
+//! 5. Links `$(brew --prefix)/bin/terry` to the binary (in `~/.cargo/bin`, where `install.sh`
+//!    puts it), so a shell finds `terry` by name without a `PATH` change, checks that it does, and
+//!    removes the `~/.local/bin/terry` link that older installs made. The pane plugin does not
+//!    need this: it runs the binary the hooks name in settings.json.
 //! 6. Installs the terry pane plugin from `plugin/` (skip with `--no-plugin`).
 
 use std::env;
-use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -125,6 +126,12 @@ fn uninstall(purge: bool) -> Result<(), String> {
         println!("  ok: none found");
     }
 
+    step("Removing the Homebrew bin link");
+    match brew_bin_dir() {
+        None => println!("  ok: no Homebrew, so no link"),
+        Some(dir) => println!("  {}", unlink_binary(&dir, &current_binary()?)?),
+    }
+
     if purge {
         step("Removing terry's exclude list and saved diffs");
         purge_data()?;
@@ -225,9 +232,7 @@ fn purge_data() -> Result<(), String> {
 
 fn install(options: &Options) -> Result<(), String> {
     let checkout = paths::checkout_dir();
-    let binary = env::current_exe()
-        .and_then(|exe| exe.canonicalize())
-        .map_err(|error| format!("cannot find this terry binary: {error}"))?;
+    let binary = current_binary()?;
 
     step("Checking prerequisites");
     require("git")?;
@@ -251,8 +256,9 @@ fn install(options: &Options) -> Result<(), String> {
     remove_hooks_from(&paths::claude_settings_local_path())?;
     smoke_test(&binary)?;
 
-    step("Checking that terry is on your PATH");
+    step("Making terry runnable by name in a shell");
     remove_old_link()?;
+    link_into_brew(&binary);
     check_on_path(&binary);
 
     if options.plugin {
@@ -278,25 +284,142 @@ fn install(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
-/// Warns when the folder of `binary` is not on `PATH`: the pane plugin and `terry exclude` run
-/// `terry` by name. `cargo install` puts it in `~/.cargo/bin`, which rustup adds to `PATH`.
-fn check_on_path(binary: &Path) {
-    let Some(dir) = binary.parent() else { return };
-    if dir_on_path(dir, env::var_os("PATH").as_deref()) {
-        println!("  ok: {} is on your PATH", dir.display());
-        return;
-    }
-    println!(
-        "  note: {} is not on your PATH, so the pane cannot find terry.\n\
-         \x20 Add this line to your shell's startup file (~/.zshrc or ~/.bashrc), then open a new terminal:\n\
-         \x20   export PATH=\"{}:$PATH\"",
-        dir.display(),
-        dir.display()
-    );
+/// This binary, with links resolved.
+fn current_binary() -> Result<PathBuf, String> {
+    env::current_exe()
+        .and_then(|exe| exe.canonicalize())
+        .map_err(|error| format!("cannot find this terry binary: {error}"))
 }
 
-fn dir_on_path(dir: &Path, path: Option<&OsStr>) -> bool {
-    path.is_some_and(|path| env::split_paths(path).any(|entry| entry == dir))
+/// Where Homebrew links the programs it installs: `$(brew --prefix)/bin`, on `PATH` for anyone
+/// who uses brew from a shell, bash or zsh. None without Homebrew.
+fn brew_bin_dir() -> Option<PathBuf> {
+    let output = Command::new("brew")
+        .arg("--prefix")
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let prefix = String::from_utf8(output.stdout).ok()?;
+    let prefix = prefix.trim();
+    (!prefix.is_empty()).then(|| Path::new(prefix).join("bin"))
+}
+
+/// Links `$(brew --prefix)/bin/terry` to `binary`. A link that cannot be made is a note, not an
+/// error: the gate and the pane work without it.
+fn link_into_brew(binary: &Path) {
+    let Some(dir) = brew_bin_dir() else {
+        println!("  skipped: no Homebrew, so no link in its bin folder");
+        return;
+    };
+    match link_binary(&dir, binary) {
+        Ok(line) => println!("  {line}"),
+        Err(error) => println!("  skipped: {error}"),
+    }
+}
+
+/// What is at `<folder>/terry`, for the link `install` makes there to the terry binary.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LinkState {
+    /// Nothing.
+    Missing,
+    /// A link to the binary.
+    Ours,
+    /// A link to a file that is gone, such as a binary `cargo uninstall` removed.
+    Dangling,
+    /// A file, or a link to another file: not terry's to change.
+    Other,
+}
+
+pub fn link_state(link: &Path, binary: &Path) -> LinkState {
+    let Ok(meta) = fs::symlink_metadata(link) else {
+        return LinkState::Missing;
+    };
+    if !meta.file_type().is_symlink() {
+        return LinkState::Other;
+    }
+    match (link.canonicalize(), binary.canonicalize()) {
+        (Ok(target), Ok(binary)) if target == binary => LinkState::Ours,
+        (Err(_), _) => LinkState::Dangling,
+        _ => LinkState::Other,
+    }
+}
+
+/// Links `<dir>/terry` to `binary`. A dangling link there is replaced; a file, or a link to
+/// another file, stays. Returns the line to print.
+pub fn link_binary(dir: &Path, binary: &Path) -> Result<String, String> {
+    let link = dir.join("terry");
+    match link_state(&link, binary) {
+        LinkState::Ours => {
+            return Ok(format!(
+                "ok: {} links to {}",
+                link.display(),
+                binary.display()
+            ));
+        }
+        LinkState::Other => {
+            return Ok(format!(
+                "skipped: {} is not a link to this terry; terry left it alone",
+                link.display()
+            ));
+        }
+        LinkState::Dangling => fs::remove_file(&link)
+            .map_err(|error| format!("cannot remove {}: {error}", link.display()))?,
+        LinkState::Missing => {}
+    }
+    std::os::unix::fs::symlink(binary, &link)
+        .map_err(|error| format!("cannot link {}: {error}", link.display()))?;
+    Ok(format!(
+        "linked: {} -> {}",
+        link.display(),
+        binary.display()
+    ))
+}
+
+/// Removes `<dir>/terry` when it is a link to `binary`, or a dangling link. A file, or a link to
+/// another file, stays. Returns the line to print.
+pub fn unlink_binary(dir: &Path, binary: &Path) -> Result<String, String> {
+    let link = dir.join("terry");
+    match link_state(&link, binary) {
+        LinkState::Missing => Ok(format!("ok: no {}", link.display())),
+        LinkState::Other => Ok(format!(
+            "skipped: {} is not a link to this terry; terry left it alone",
+            link.display()
+        )),
+        LinkState::Ours | LinkState::Dangling => {
+            fs::remove_file(&link)
+                .map_err(|error| format!("cannot remove {}: {error}", link.display()))?;
+            Ok(format!("removed: {}", link.display()))
+        }
+    }
+}
+
+/// Says whether `terry`, typed in a shell, runs `binary`. Only `terry exclude` and the other
+/// commands you type need that; the hooks and the pane run `binary` by its full path.
+fn check_on_path(binary: &Path) {
+    let found = paths::find_on_path("terry");
+    match found.as_deref().map(Path::canonicalize) {
+        Some(Ok(path)) if path == binary => {
+            println!("  ok: `terry` in a shell runs {}", binary.display())
+        }
+        Some(_) => println!(
+            "  note: `terry` in a shell runs {}, not {}. The hooks and the pane use the second.",
+            found.as_deref().unwrap_or(binary).display(),
+            binary.display()
+        ),
+        None => {
+            let dir = binary.parent().unwrap_or(binary);
+            println!(
+                "  note: `terry` is not on your PATH. The hooks and the pane work without it; to type\n\
+                 \x20 `terry exclude` and the like in a shell, add this line to ~/.zshrc (zsh) or\n\
+                 \x20 ~/.bash_profile (bash), then open a new terminal:\n\
+                 \x20   export PATH=\"{}:$PATH\"",
+                dir.display()
+            );
+        }
+    }
 }
 
 /// The link `~/.local/bin/terry` that older installs made. Returns true when it removed one. A
@@ -650,27 +773,4 @@ fn smoke_test(binary: &Path) -> Result<(), String> {
     }
     println!("  ok: the gate runs");
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::env;
-    use std::path::Path;
-
-    use super::dir_on_path;
-
-    #[test]
-    fn should_find_a_folder_that_is_on_path() {
-        let path = env::join_paths(["/usr/bin", "/home/a/.cargo/bin"]).expect("joins");
-
-        assert!(dir_on_path(Path::new("/home/a/.cargo/bin"), Some(&path)));
-    }
-
-    #[test]
-    fn should_not_find_a_folder_that_is_missing_from_path() {
-        let path = env::join_paths(["/usr/bin"]).expect("joins");
-
-        assert!(!dir_on_path(Path::new("/home/a/.local/bin"), Some(&path)));
-        assert!(!dir_on_path(Path::new("/home/a/.local/bin"), None));
-    }
 }
