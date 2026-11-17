@@ -85,6 +85,8 @@ declare module 'claude-code' {
       /** A held command to review in the permission prompt, as no pane can be drawn. */
       promptReviewFor: string | null
       gate: GateState
+      /** The terry binary the gate's hooks run, from settings.json; `terry` on PATH when no hook names one. */
+      binary: string
       /** The branches from the default branch down to the checked-out one, by `terry branches`; empty when none. */
       branchChain: string[]
       /** The display settings by `terry config`; the defaults until they were read. */
