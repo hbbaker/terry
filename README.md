@@ -3,7 +3,6 @@
 A file tree and diff review tool for Claude Code, with git hooks and linting.
 
 [![CI](https://github.com/hbbaker/terry/actions/workflows/ci.yml/badge.svg)](https://github.com/hbbaker/terry/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/hbbaker/terry/branch/main/graph/badge.svg)](https://codecov.io/gh/hbbaker/terry)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust edition 2024](https://img.shields.io/badge/rust-edition%202024-orange.svg)](Cargo.toml)
 
