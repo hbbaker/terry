@@ -4,6 +4,9 @@ target/
 # The fallback ESLint's packages, which `terry install` installs on each machine
 lint/node_modules/
 
+# Local Claude Code files
+/.claude/
+
 # Types the Claude Code engine writes beside a mod it loads
 plugin/.claude-plugin/types/
 
