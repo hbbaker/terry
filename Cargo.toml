@@ -2,7 +2,8 @@
 name = "terry"
 version = "0.1.0"
 edition = "2024"
-description = "A review gate for Claude Code: stops commits and PR changes until you review the diff"
+description = "A file tree and diff review tool for Claude Code, with git hooks and linting"
+license = "MIT"
 publish = false
 
 [dependencies]
