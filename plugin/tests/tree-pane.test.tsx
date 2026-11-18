@@ -113,17 +113,21 @@ type SessionOptions = {
   uploads?: string[][]
   /** Collects the argv of every process the plugin runs. */
   calls?: string[][]
+  /** The files the plugin can read, by path. */
+  files?: Record<string, string>
 }
 
 /** Starts the session with the files of a repo on `dev`. */
 async function startSession(
-  ...[$, on, { status = ON, panes = [], opened = [], tree = TREE, hold = Promise.resolve(), config = configOf(), logs = [], diff = FILE_DIFF, upload = UPLOADED, uploads = [], calls = [] } = {}]: [
+  ...[$, on, { status = ON, panes = [], opened = [], tree = TREE, hold = Promise.resolve(), config = configOf(), logs = [], diff = FILE_DIFF, upload = UPLOADED, uploads = [], calls = [], files = {} } = {}]: [
     ...Parameters<TestBody>,
     SessionOptions?,
   ]
 ): Promise<ReturnType<typeof mock.clock>> {
   const clock = mock.clock(on)
   on('env.get', () => ({ value: HOME }))
+  on('fs.exists', (_, e) => ({ value: e.path in files }))
+  on('fs.read', (_, e) => ({ value: files[e.path] ?? '' }))
   on('command.register', () => ({ value: { command: 'terry' } }))
   on('ui.open', (_, e) => (opened.push(`${e.id}:${e.columns ?? ''}`), { value: { isPlaced: true } }))
   on('ui.panes', () => ({ value: panes }))
@@ -724,4 +728,51 @@ test('should read the tree again when an upload worked', async ($, on) => {
 
   expect(calls.filter(argv => argv.includes('tree')).length).toBeGreaterThan(treeReadsBefore)
   await pane.unmount()
+})
+
+test('should run the binary the gate hooks name in the settings, not terry on PATH', async ($, on) => {
+  const binary = '/Users/tester/.cargo/bin/terry'
+  const settings = JSON.stringify({
+    hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `${binary} gate bash` }] }] },
+  })
+  const calls: string[][] = []
+  await startSession($, on, { calls, files: { [`${HOME}/.claude/settings.json`]: settings, [binary]: '' } })
+
+  expect(calls.length).toBeGreaterThan(0)
+  expect(calls.every(argv => argv[0] === binary)).toBe(true)
+})
+
+test('should run terry on PATH when the binary the hooks name is gone', async ($, on) => {
+  const settings = JSON.stringify({
+    hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: '/gone/terry gate bash' }] }] },
+  })
+  const calls: string[][] = []
+  await startSession($, on, { calls, files: { [`${HOME}/.claude/settings.json`]: settings } })
+
+  expect(calls.length).toBeGreaterThan(0)
+  expect(calls.every(argv => argv[0] === 'terry')).toBe(true)
+})
+
+test('should not say the tree opened with files when terry status cannot run', async ($, on) => {
+  await startSession($, on, { status: { ...ON, exitCode: 2, stdout: '' } })
+
+  const answer = await $.command.run({ command: 'terry', args: '' })
+
+  expect(answer.text).toMatch(/^File tree opened, without files\. Cannot run `terry status`/)
+})
+
+test('should say terry is off when /terry runs in an excluded folder', async ($, on) => {
+  await startSession($, on, { status: OFF })
+
+  const answer = await $.command.run({ command: 'terry', args: '' })
+
+  expect(answer.text).toBe('File tree opened, without files. Terry is off in this folder.')
+})
+
+test('should say no diff was reviewed yet when /terry runs with the gate on', async ($, on) => {
+  await startSession($, on)
+
+  const answer = await $.command.run({ command: 'terry', args: '' })
+
+  expect(answer.text).toBe('File tree opened. Terry has not reviewed a diff in this session yet.')
 })

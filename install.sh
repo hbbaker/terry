@@ -5,9 +5,11 @@
 #   ./install.sh --yes        install missing lint tools and delta without asking
 #   ./install.sh --no-plugin  skip the Claude Code pane plugin
 #
-# It installs the terry binary with `cargo install`, into ~/.cargo/bin (a folder rustup puts on
-# PATH, so the pane and `terry exclude` find `terry` by name), then runs `terry install`, which
-# does the rest: see src/install.rs. To undo it all, run ./uninstall.sh.
+# It installs the terry binary with `cargo install`, into ~/.cargo/bin, then runs `terry install`,
+# which does the rest: see src/install.rs. The hooks and the pane run the binary by its full path.
+# So that `terry exclude` and the like work in a shell with no PATH change (~/.cargo/bin is on
+# PATH only with rustup, not with Homebrew's Rust), it links $(brew --prefix)/bin/terry to it.
+# To undo it all, run ./uninstall.sh.
 
 set -euo pipefail
 

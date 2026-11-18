@@ -55,7 +55,8 @@ cd ~/Projects/terry
 
 Then start a new Claude Code session, or run `/reload-plugins` in an open one.
 
-The installer puts the `terry` binary in `~/.cargo/bin`, adds two hooks to
+The installer puts the `terry` binary in `~/.cargo/bin` (and links it into `$(brew --prefix)/bin`
+if you use Homebrew), adds two hooks to
 `~/.claude/settings.json`, and installs the pane plugin. It makes a backup before it edits any
 file. Run `./install.sh` again after a `git pull`. For the full list of changes, see
 [install details](docs/install-details.md).

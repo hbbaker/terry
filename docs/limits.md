@@ -29,6 +29,12 @@
 - While Claude Code shows a dialog (the permission prompt, a question), the pane gets no mouse
   wheel or keys. A pane open beside the prompt can garble the terminal. This is why the review
   happens in the pane first, and why Approve closes the pane.
+- Claude Code, not terry, decides where a pane goes. It docks the panes on the right only in its
+  fullscreen layout and in a terminal 110 columns or wider. Below 110 columns, or in the
+  main-screen layout (`CLAUDE_CODE_NO_FLICKER=0`, and tmux by default), a pane shows at the bottom,
+  above the prompt. A plugin cannot ask for the right side. To keep it there, start Claude Code in
+  the fullscreen layout (for example `"env": {"CLAUDE_CODE_NO_FLICKER": "1"}` in
+  `~/.claude/settings.json`) and keep the window 110 columns or wider.
 - The panes open without your request only in a terminal 144 columns or wider (110 once you have
   opened one with `/terry`). In a narrower terminal, run `/terry`. Claude Code docks a pane at most
   45% of the width wide, and shows two open panes as tabs, not side by side. While you review a

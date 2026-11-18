@@ -13,7 +13,8 @@
   root, the branch, the ref the changes count from (`since`), and the files nested in folders.
   Each file has its status against that point and whether a commit landed it.
 - **Open the panes again.** `/terry` opens the "Files" pane. It also opens the "Diff review" pane
-  when a diff was reviewed.
+  when a diff was reviewed. When terry cannot run, or is off in the folder, the pane opens without
+  files, and `/terry` answers "File tree opened, without files." with the reason.
 - **Approve or reject with the keyboard.** The pane takes the keys when it opens (unless you type).
   Press `y` to approve or `n` to reject. Arrows, Page Up/Down, Home and End scroll the diff. `a`
   and `d` scroll it sideways (the ◀ and ▶ buttons do the same). Esc gives the keys back.

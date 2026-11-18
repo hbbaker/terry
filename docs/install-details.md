@@ -12,6 +12,7 @@ these things outside the checkout:
 | `~/.claude/settings.json` | Adds two `PreToolUse` hooks that run the terry binary, and `ask` rules for commit and `gh pr`. A backup goes to `~/.claude/backups/` first. terry writes the file back with its keys in A–Z order. |
 | `~/.claude/settings.local.json` | Removes the terry hooks, if an older install wrote them there (they run a build folder path, run the gate a second time, and break at `cargo clean`). A backup goes to `~/.claude/backups/` first. Nothing else in the file changes. |
 | `~/.cargo/bin/terry` | The binary, put there by `cargo install`. |
+| `$(brew --prefix)/bin/terry` | A link to the binary, so `terry` works in a shell. Only with Homebrew, and only when nothing else is there. |
 | Claude Code plugins | Installs the `terry` pane plugin from `plugin/`. It removes the installed copy first, so Claude Code does not keep a stale cached copy. |
 
 Run `./install.sh` again after a `git pull`. Use `./install.sh --no-plugin` to skip the pane.
@@ -19,17 +20,22 @@ Run `./install.sh` again after a `git pull`. Use `./install.sh --no-plugin` to s
 ## Where terry installs, and why
 
 The binary goes to `~/.cargo/bin/terry` (under `$CARGO_HOME`, or `$CARGO_INSTALL_ROOT` if you set
-it). Two things run `terry` by name, so the folder must be on your `PATH`: the pane plugin (it runs
-`terry status`, `terry tree` and more), and you, when you type `terry exclude`. The gate hooks in
-`~/.claude/settings.json` use the full path, so they do not depend on `PATH`.
+it). Claude Code does not need that folder on your `PATH`. The gate hooks in
+`~/.claude/settings.json` run the binary by its full path, and the pane plugin reads that same path
+from those hooks. So the hooks and the pane always run the same terry, and a new `./install.sh`
+moves both.
 
-Why `~/.cargo/bin`: Rust is already required, and rustup puts that folder on `PATH` for you. Older
-versions linked the binary into `~/.local/bin`. That folder is not on `PATH` by default on macOS,
-so the pane could not run `terry` and wrongly said "terry is off in this folder".
+Only you need `terry` by name, when you type `terry exclude` or `terry status` in a shell.
+`~/.cargo/bin` is on `PATH` with the Rust of rustup, but not with the Rust of Homebrew. So the
+installer links `$(brew --prefix)/bin/terry` to the binary: `/opt/homebrew/bin` on Apple silicon,
+`/usr/local/bin` on Intel. That folder is on `PATH` for anyone who uses brew, in bash or zsh, and it
+needs no `sudo`. The installer leaves alone a file there, or a link to another program. Without
+Homebrew, the last step of the installer names the line to add to `~/.zshrc` (zsh) or
+`~/.bash_profile` (bash).
 
-If the pane says it cannot run `terry status`, the last step of the installer names the folder to
-add. Put `export PATH="$HOME/.cargo/bin:$PATH"` in `~/.zshrc` (or `~/.bashrc`), then open a new
-terminal.
+Older versions linked the binary into `~/.local/bin`. That folder is not on `PATH` by default on
+macOS, so the pane could not run `terry` and wrongly said "terry is off in this folder". If the
+pane says it cannot run `terry status`, run `./install.sh` again.
 
 ## Uninstall
 
@@ -43,6 +49,7 @@ The script reverses the install:
 - It takes the terry hooks out of `~/.claude/settings.json` and `~/.claude/settings.local.json`.
   A backup of each goes to `~/.claude/backups/` first. Your other settings stay.
 - It removes the delta `include.path` from `~/.gitconfig`.
+- It removes the `$(brew --prefix)/bin/terry` link (only when it points at terry, or at nothing).
 - It uninstalls the pane plugin and removes the binary.
 - It removes the `~/.local/bin/terry` link that older installs made.
 
