@@ -16,7 +16,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, llvm-tools-preview
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
 
@@ -29,15 +29,5 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-
-      - name: Test with coverage
-        run: cargo llvm-cov --lcov --output-path lcov.info
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          files: lcov.info
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
+      - name: Test
+        run: cargo test
